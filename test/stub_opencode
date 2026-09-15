@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""
+Test stub standing in for the `opencode` binary during integration tests.
+
+The Darkmoon Dashboard API spawns:
+    opencode run --agent pentest --format json "<prompt>"
+
+The REAL binary runs the LLM-driven pentest engine (sealed container + license
++ MCP toolkit) which is NOT available in this environment. This stub reproduces
+exactly what the engine does with respect to the dashboard: it calls the REAL
+dashboard write-path (api.live_push.init_live_campaign / push_finding /
+finalize_campaign) so the full trigger -> results flow can be exercised
+end-to-end against the real API code.
+
+The vulnerability content below is a fixture on an AUTHORISED synthetic lab
+target, not an LLM-discovered finding.
+"""
+import json
+import os
+import re
+import sys
+import time
+import uuid
+
+MCP_DIR = os.environ["DM_MCP_DIR"]
+sys.path.insert(0, MCP_DIR)
+
+from api.live_push import init_live_campaign, push_finding, finalize_campaign  # noqa: E402
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
+    m = re.search(r"TARGET:\s*(\S+)", prompt)
+    target = m.group(1) if m else "unknown.lab"
+    host = re.sub(r"^https?://", "", target).split("/")[0].split(":")[0]
+
+    session_id = uuid.uuid4().hex[:8]
+    emit({"type": "step", "sessionID": f"ses_{session_id}", "text": f"Starting assessment of {target}"})
+    time.sleep(0.2)
+
+    init = init_live_campaign(
+        session_id=session_id,
+        target_host=host,
+        target_ip=host,
+        project_name="Darkmoon Lab Assessment",
+    )
+    campaign_id = init["campaign_id"]
+    emit({"type": "step", "text": f"Campaign initialised: {campaign_id}"})
+
+    push_finding(campaign_id, {
+        "title": "Reflected XSS in search parameter (lab fixture)",
+        "severity": "high",
+        "cvss_score": 6.1,
+        "category": "xss_reflected",
+        "status": "confirmed",
+        "description": "The search endpoint reflects the 'q' parameter without "
+                       "output encoding. Fixture finding produced by the test "
+                       "stub on an authorised synthetic lab target.",
+        "endpoint": f"{target}/rest/products/search?q=",
+        "discovered_by_agent": "test-stub",
+        "remediation": "Context-encode all user-controlled output; apply a CSP.",
+    })
+    emit({"type": "step", "text": "Finding pushed: Reflected XSS"})
+    time.sleep(0.2)
+
+    finalize_campaign(
+        campaign_id,
+        duration_seconds=1,
+        executive_summary="Automated lab assessment (test stub).",
+        final_status="completed",
+    )
+    emit({"type": "step", "text": "Campaign finalised", "campaign_id": campaign_id})
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

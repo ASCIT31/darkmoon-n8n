@@ -1,0 +1,7 @@
+.github/
+test/
+tsconfig.json
+.eslintrc.js
+gulpfile.js
+*.ts
+!dist/**/*
