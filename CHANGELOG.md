@@ -5,6 +5,10 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [0.2.0] - 2026-09-16
 
+**Published to npm:** https://www.npmjs.com/package/n8n-nodes-darkmoon (v0.2.0, `latest`) —
+built and signed on GitHub Actions with npm provenance (SLSA provenance v1).
+Release: https://github.com/ASCIT31/n8n-nodes-darkmoon/releases/tag/v0.2.0
+
 ### Added
 - **Remediation on Run Pentest.** New **Enable Remediation** toggle (default off; off = unchanged behaviour). When on, the node passes the opaque `credential_id` (a Darkmoon vault reference, never a token), `git_repo` and `create_repo` to the run, and returns any fix pull requests. Includes a bounded **Wait for Pull Requests** poll (never loops forever).
 - **Pull-request operations** (read-only): **List Pull Requests** (server filter `campaign_id`, plus client-side state/provider/repository filters), **Get Pull Request**, **Get Pull Requests by Finding** — mapped to the real `/api/v1/pull-requests` endpoints and `pr_store.py` fields/states.
