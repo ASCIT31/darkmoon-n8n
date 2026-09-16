@@ -21,10 +21,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
+      # --ignore-scripts avoids compiling native transitive deps (e.g.
+      # isolated-vm, pulled in by n8n-workflow) that we never use — lint,
+      # build, tests and publish need only the JS/type sources.
+      - run: npm ci --ignore-scripts
 
       - run: npm run lint
 
