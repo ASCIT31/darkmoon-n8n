@@ -39,16 +39,22 @@ export class Darkmoon implements INodeType {
 				default: 'runPentest',
 				options: [
 					{
-						name: 'Run Pentest',
-						value: 'runPentest',
-						description: 'Start a pentest against a target and (optionally) wait for findings',
-						action: 'Run a pentest',
-					},
-					{
 						name: 'Get Findings',
 						value: 'getFindings',
 						description: 'Fetch the vulnerabilities of a campaign',
 						action: 'Get findings for a campaign',
+					},
+					{
+						name: 'Get Pull Request',
+						value: 'getPullRequest',
+						description: 'Fetch one pull request record (diff summary, validation, linked findings)',
+						action: 'Get a pull request',
+					},
+					{
+						name: 'Get Pull Requests by Finding',
+						value: 'getPullRequestsByFinding',
+						description: 'Fetch the pull requests that address a specific finding',
+						action: 'Get pull requests for a finding',
 					},
 					{
 						name: 'Get Report',
@@ -61,6 +67,19 @@ export class Darkmoon implements INodeType {
 						value: 'listCampaigns',
 						description: 'List past and running campaigns',
 						action: 'List campaigns',
+					},
+					{
+						name: 'List Pull Requests',
+						value: 'listPullRequests',
+						description:
+							'List the fix pull requests Darkmoon prepared. Optionally narrow to one campaign, or to given states/provider/repository.',
+						action: 'List pull requests',
+					},
+					{
+						name: 'Run Pentest',
+						value: 'runPentest',
+						description: 'Start a pentest against a target and (optionally) wait for findings',
+						action: 'Run a pentest',
 					},
 				],
 			},
@@ -85,6 +104,63 @@ export class Darkmoon implements INodeType {
 				description:
 					'Whether to poll until the run finishes and return the findings. If off, returns the run_id immediately.',
 				displayOptions: { show: { operation: ['runPentest'] } },
+			},
+			{
+				displayName: 'Enable Remediation',
+				name: 'enableRemediation',
+				type: 'boolean',
+				default: false,
+				description:
+					'Whether Darkmoon should also try to fix the issues it confirms and open a pull request with the fix for a human to review. It never merges anything. Leave off to only find issues. Requires a credential reference below.',
+				displayOptions: { show: { operation: ['runPentest'] } },
+			},
+			{
+				displayName: 'Remediation Settings',
+				name: 'remediation',
+				type: 'collection',
+				placeholder: 'Add Setting',
+				default: {},
+				displayOptions: { show: { operation: ['runPentest'], enableRemediation: [true] } },
+				options: [
+					{
+						displayName: 'Allow Darkmoon to Create the Repository',
+						name: 'createRepository',
+						type: 'boolean',
+						default: false,
+						description:
+							'Whether to authorise Darkmoon to create the repository if it does not exist yet',
+					},
+					{
+						displayName: 'Credential Reference',
+						name: 'credentialReference',
+						type: 'string',
+						default: '',
+						description: 'Opaque ID of a source-control credential already stored in Darkmoon\'s vault (create it in the Darkmoon dashboard, or via GET /api/v1/credentials). This is a reference, NOT a token — no secret is sent through the workflow.',
+					},
+					{
+						displayName: 'Pull Request Wait Timeout (Minutes)',
+						name: 'prTimeoutMinutes',
+						type: 'number',
+						default: 5,
+						description: 'Stop waiting for pull requests after this many minutes',
+					},
+					{
+						displayName: 'Repository URL',
+						name: 'repositoryUrl',
+						type: 'string',
+						default: '',
+						placeholder: 'https://github.com/acme/shop',
+						description: 'Source repository the target was built from, where the fix PR is opened',
+					},
+					{
+						displayName: 'Wait for Pull Requests',
+						name: 'waitForPullRequests',
+						type: 'boolean',
+						default: true,
+						description:
+							'Whether to keep checking after the pentest until at least one pull request appears, then return them. Remediation runs during the pentest, so PRs are usually ready immediately.',
+					},
+				],
 			},
 			{
 				displayName: 'Options',
@@ -176,6 +252,78 @@ export class Darkmoon implements INodeType {
 				description: 'The campaign to read (from Run Pentest output or List Campaigns)',
 				displayOptions: { show: { operation: ['getFindings', 'getReport'] } },
 			},
+
+			// ── Pull request parameters ─────────────────────────────────
+			{
+				displayName: 'Campaign ID',
+				name: 'prCampaignId',
+				type: 'string',
+				default: '',
+				description:
+					'Optional. Restrict to one campaign (the only filter the API applies server-side). Leave empty to list pull requests across all campaigns.',
+				displayOptions: { show: { operation: ['listPullRequests'] } },
+			},
+			{
+				displayName: 'Filters',
+				name: 'prFilters',
+				type: 'collection',
+				placeholder: 'Add Filter',
+				default: {},
+				description: 'Applied client-side to the returned records (the API does not filter by these)',
+				displayOptions: { show: { operation: ['listPullRequests'] } },
+				options: [
+					{
+						displayName: 'Provider',
+						name: 'provider',
+						type: 'string',
+						default: '',
+						placeholder: 'github',
+						description: 'Keep only pull requests from this SCM provider',
+					},
+					{
+						displayName: 'Repository',
+						name: 'repository',
+						type: 'string',
+						default: '',
+						description: 'Keep only pull requests whose repository contains this text',
+					},
+					{
+						displayName: 'State',
+						name: 'state',
+						type: 'multiOptions',
+						default: [],
+						description: 'Keep only pull requests in these states',
+						options: [
+							{ name: 'Closed', value: 'closed' },
+							{ name: 'Draft', value: 'draft' },
+							{ name: 'Error', value: 'error' },
+							{ name: 'Merged', value: 'merged' },
+							{ name: 'Open', value: 'open' },
+							{ name: 'Proposed', value: 'proposed' },
+						],
+					},
+				],
+			},
+			{
+				displayName: 'Pull Request ID',
+				name: 'prId',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'pr_1a2b3c4d5e6f',
+				description: 'The pull request to fetch',
+				displayOptions: { show: { operation: ['getPullRequest'] } },
+			},
+			{
+				displayName: 'Finding ID',
+				name: 'findingId',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'vuln_a03114',
+				description: 'The finding whose pull requests you want',
+				displayOptions: { show: { operation: ['getPullRequestsByFinding'] } },
+			},
 		],
 	};
 
@@ -218,6 +366,21 @@ export class Darkmoon implements INodeType {
 					const target = this.getNodeParameter('target', i) as string;
 					const wait = this.getNodeParameter('waitForCompletion', i) as boolean;
 					const opt = this.getNodeParameter('options', i, {}) as Record<string, any>;
+					const enableRemediation = this.getNodeParameter('enableRemediation', i, false) as boolean;
+					const rem = enableRemediation
+						? (this.getNodeParameter('remediation', i, {}) as Record<string, any>)
+						: {};
+
+					const credentialReference = String(rem.credentialReference || '').trim();
+					// Fail fast if remediation is on but no credential reference is set.
+					try {
+						DarkmoonClient.validateRemediation({
+							remediate: enableRemediation,
+							credential_id: credentialReference,
+						});
+					} catch (e) {
+						throw new NodeOperationError(this.getNode(), (e as Error).message, { itemIndex: i });
+					}
 
 					const beforeIds = new Set((await client.listCampaigns()).map((c) => c.id));
 
@@ -230,11 +393,22 @@ export class Darkmoon implements INodeType {
 						focus: csv(opt.focus),
 						severity: opt.severity || undefined,
 						safe_harbor: opt.safe_harbor || undefined,
+						// Remediation — opaque credential reference only, never a token.
+						remediate: enableRemediation || undefined,
+						credential_id: enableRemediation ? credentialReference : undefined,
+						git_repo: enableRemediation ? String(rem.repositoryUrl || '').trim() || undefined : undefined,
+						create_repo: enableRemediation ? Boolean(rem.createRepository) || undefined : undefined,
 					});
 
 					if (!wait) {
 						returnData.push({
-							json: { operation, ...handle, status: 'started', waited: false },
+							json: {
+								operation,
+								...handle,
+								status: 'started',
+								waited: false,
+								remediation_enabled: enableRemediation,
+							},
 							pairedItem: { item: i },
 						});
 						continue;
@@ -249,6 +423,26 @@ export class Darkmoon implements INodeType {
 					let findings: any = { data: [], total: 0, stats: {} };
 					if (campaign) findings = await client.getFindings(campaign.id);
 
+					// Pull requests: remediation runs during the pentest, so PRs are
+					// usually present as soon as the run completes. We fetch them (and
+					// optionally poll briefly) but NEVER merge or modify them.
+					let pullRequests: any[] = [];
+					let prTimedOut = false;
+					if (enableRemediation && campaign) {
+						const waitPr = rem.waitForPullRequests !== false;
+						if (waitPr) {
+							const res = await client.waitForPullRequests(campaign.id, {
+								minCount: 1,
+								pollMs: 5000,
+								timeoutMs: Math.max(1, Number(rem.prTimeoutMinutes ?? 5)) * 60 * 1000,
+							});
+							pullRequests = res.pullRequests;
+							prTimedOut = res.timedOut;
+						} else {
+							pullRequests = await client.listPullRequests(campaign.id);
+						}
+					}
+
 					returnData.push({
 						json: {
 							operation,
@@ -261,7 +455,48 @@ export class Darkmoon implements INodeType {
 							total_findings: findings.total,
 							stats: findings.stats,
 							findings: findings.data,
+							remediation_enabled: enableRemediation,
+							pull_requests_timed_out: enableRemediation ? prTimedOut : undefined,
+							total_pull_requests: enableRemediation ? pullRequests.length : undefined,
+							pull_requests: enableRemediation ? pullRequests : undefined,
 							waited: true,
+						},
+						pairedItem: { item: i },
+					});
+				} else if (operation === 'listPullRequests') {
+					const prCampaignId = String(this.getNodeParameter('prCampaignId', i, '') as string).trim();
+					const prFilters = this.getNodeParameter('prFilters', i, {}) as Record<string, any>;
+					const all = await client.listPullRequests(prCampaignId || undefined);
+					const filtered = DarkmoonClient.filterPullRequests(all, {
+						state: Array.isArray(prFilters.state) ? prFilters.state : undefined,
+						provider: prFilters.provider || undefined,
+						repository: prFilters.repository || undefined,
+					});
+					returnData.push({
+						json: {
+							operation,
+							campaign_id: prCampaignId || null,
+							total: filtered.length,
+							pull_requests: filtered,
+						},
+						pairedItem: { item: i },
+					});
+				} else if (operation === 'getPullRequest') {
+					const prId = this.getNodeParameter('prId', i) as string;
+					const pr = await client.getPullRequest(prId);
+					returnData.push({
+						json: { operation, ...pr },
+						pairedItem: { item: i },
+					});
+				} else if (operation === 'getPullRequestsByFinding') {
+					const findingId = this.getNodeParameter('findingId', i) as string;
+					const prs = await client.getPullRequestsForFinding(findingId);
+					returnData.push({
+						json: {
+							operation,
+							finding_id: findingId,
+							total: prs.length,
+							pull_requests: prs,
 						},
 						pairedItem: { item: i },
 					});

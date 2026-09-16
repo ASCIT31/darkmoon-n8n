@@ -32,6 +32,17 @@ GET /api/v1/vulnerabilities?campaign_id=…       -> { data: finding[], total, s
 ```
 Findings carry: `id`, `title`, `severity`, `status`, `category`, `cvss_score`, `cvss_vector`, `cve`, `mitre_attack_id`, `iso27001_control`, `description`, `evidence`, `remediation`, `endpoint`, `discovered_by_agent`. Stats aggregate `by_severity`, `by_category`, `by_status`.
 
+### Pull requests — `routes_pull_requests.py`, `pr_store.py`
+```
+GET /api/v1/pull-requests?campaign_id=…       -> { data: PullRequest[], total }   (campaign_id is the ONLY filter)
+GET /api/v1/pull-requests/{pr_id}             -> { data: PullRequest }
+GET /api/v1/pull-requests/finding/{vuln_id}   -> { data: PullRequest[], total }
+```
+**Read-only.** PR records are created by the remediation agent during a run via the MCP `dashboard_link_pr` tool — there is no HTTP write/merge endpoint. `PullRequest` fields (pr_store.py): `id`, `campaign_id`, `provider`, `repo`, `url`, `number`, `title`, `state`, `branch`, `base`, `summary`, `files_changed`, `diff_stat`, `patch`, `validation`, `finding_ids`, `created_at`, `updated_at`, `created_by_agent`. **States** (`pr_store.PR_STATES`): `proposed`, `draft`, `open`, `merged`, `closed`, `error`. Note the field is `repo` (not `repository`), and `error` is a *state*, not a field. The list endpoint accepts **no** `status`/`provider`/`repository`/`page`/`limit` query parameters — only `campaign_id`.
+
+### Remediation trigger — via `POST /run/campaign`
+Remediation is enabled inside the run request, not by a separate call. `CampaignRunRequest` (routes_run.py) accepts: `remediate` (→ `REMEDIATE=1`), `credential_id` (→ `CREDENTIAL_REF`, an **opaque** vault id, never a token), `git_repo` (→ `REPO`), `create_repo` (→ `CREATE_REPO`). It does **not** accept a provider or a minimum-confidence field — those are decided server-side. The node exposes exactly these four and nothing invented.
+
 ## The correlation gap (and how the node works around it)
 
 `POST /run/campaign` returns a **`run_id`**, but findings are keyed by **`campaign_id`**. The pentest agent creates the campaign itself, inside the run, via the MCP tool `dashboard_init_campaign(session_id, target_host, …)`, which mints `campaign_id = camp_<YYYYMMDD>_<session_fragment>`. There is today **no endpoint that maps a `run_id` to its `campaign_id`.**

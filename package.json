@@ -1,7 +1,7 @@
 {
 	"name": "n8n-nodes-darkmoon",
-	"version": "0.1.0",
-	"description": "n8n community node to trigger a Darkmoon AI pentest and retrieve its findings",
+	"version": "0.2.0",
+	"description": "n8n community node to trigger a Darkmoon AI pentest, retrieve its findings, and review the fix pull requests it prepares",
 	"keywords": [
 		"n8n-community-node-package",
 		"n8n",
@@ -31,10 +31,14 @@
 		"format": "prettier nodes credentials --write",
 		"lint": "eslint nodes credentials package.json",
 		"lintfix": "eslint nodes credentials package.json --fix",
-		"test:e2e": "node test/e2e.mjs"
+		"test": "npm run test:unit",
+		"test:unit": "node test/unit.mjs",
+		"test:e2e": "node test/e2e.mjs",
+		"test:e2e:local": "bash test/run_local_api.sh"
 	},
 	"files": [
-		"dist"
+		"dist",
+		"examples"
 	],
 	"n8n": {
 		"n8nNodesApiVersion": 1,

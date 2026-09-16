@@ -45,6 +45,49 @@ export interface RunPentestParams {
 	severity?: string;
 	format?: string;
 	safe_harbor?: string;
+	// --- Remediation (Pro) — maps 1:1 to CampaignRunRequest -----------------
+	// The remediation phase runs DURING the pentest and opens fix pull requests.
+	// `credential_id` is an OPAQUE reference to a credential stored in Darkmoon's
+	// encrypted vault (created via the dashboard / POST /api/v1/credentials) — it
+	// is NOT a token. Raw SCM secrets never travel through this node.
+	remediate?: boolean;
+	credential_id?: string;
+	git_repo?: string;
+	create_repo?: boolean;
+}
+
+/** A pull-request record, exactly as stored by the remediation agent (pr_store.py). */
+export interface PullRequest {
+	id: string;
+	campaign_id?: string;
+	provider?: string;
+	repo?: string;
+	url?: string;
+	number?: number | null;
+	title?: string;
+	state?: string; // proposed | draft | open | merged | closed | error
+	branch?: string;
+	base?: string;
+	summary?: string;
+	files_changed?: string[];
+	diff_stat?: Record<string, any>;
+	validation?: Record<string, any>;
+	finding_ids?: string[];
+	created_at?: number;
+	updated_at?: number;
+	created_by_agent?: string;
+	[k: string]: any;
+}
+
+/** The exact PR states the store recognises (pr_store.PR_STATES). */
+export const PR_STATES = ['proposed', 'draft', 'open', 'merged', 'closed', 'error'] as const;
+export type PrState = (typeof PR_STATES)[number];
+
+/** Client-side filter for a PR list (the API only filters by campaign_id server-side). */
+export interface PullRequestFilter {
+	state?: string[];
+	provider?: string;
+	repository?: string; // matched against the record's `repo` field
 }
 
 export interface RunHandle {
@@ -291,5 +334,119 @@ export class DarkmoonClient {
 			content: (res.body && res.body.content) || '',
 			format: (res.body && res.body.format) || 'markdown',
 		};
+	}
+
+	// ── Pull requests (read-only — writes are created by the remediation agent) ──
+
+	/**
+	 * List pull requests. `campaignId` is the ONLY server-side filter the API
+	 * accepts (GET /pull-requests?campaign_id=…). Any state/provider/repository
+	 * narrowing is applied client-side via {@link filterPullRequests}.
+	 */
+	async listPullRequests(campaignId?: string): Promise<PullRequest[]> {
+		const q = campaignId ? `?campaign_id=${encodeURIComponent(campaignId)}` : '';
+		const res = await this.http({
+			method: 'GET',
+			url: this.url(`/api/v1/pull-requests${q}`),
+			headers: this.authHeaders(),
+		});
+		if (res.statusCode !== 200) {
+			throw new DarkmoonError(this.detail(res, 'Failed to list pull requests'), res.statusCode);
+		}
+		return Array.isArray(res.body && res.body.data) ? res.body.data : [];
+	}
+
+	async getPullRequest(prId: string): Promise<PullRequest> {
+		const res = await this.http({
+			method: 'GET',
+			url: this.url(`/api/v1/pull-requests/${encodeURIComponent(prId)}`),
+			headers: this.authHeaders(),
+		});
+		if (res.statusCode !== 200) {
+			throw new DarkmoonError(this.detail(res, `Pull request ${prId} not found`), res.statusCode);
+		}
+		return (res.body && res.body.data) || {};
+	}
+
+	async getPullRequestsForFinding(vulnId: string): Promise<PullRequest[]> {
+		const res = await this.http({
+			method: 'GET',
+			url: this.url(`/api/v1/pull-requests/finding/${encodeURIComponent(vulnId)}`),
+			headers: this.authHeaders(),
+		});
+		if (res.statusCode !== 200) {
+			throw new DarkmoonError(
+				this.detail(res, `Failed to fetch pull requests for finding ${vulnId}`),
+				res.statusCode,
+			);
+		}
+		return Array.isArray(res.body && res.body.data) ? res.body.data : [];
+	}
+
+	/** Client-side narrowing of a PR list. The API does not filter by these fields. */
+	static filterPullRequests(prs: PullRequest[], filter?: PullRequestFilter): PullRequest[] {
+		if (!filter) return prs;
+		let out = prs;
+		if (filter.state && filter.state.length) {
+			const want = new Set(filter.state.map((s) => s.toLowerCase()));
+			out = out.filter((p) => want.has(String(p.state || '').toLowerCase()));
+		}
+		if (filter.provider) {
+			const p = filter.provider.toLowerCase();
+			out = out.filter((x) => String(x.provider || '').toLowerCase() === p);
+		}
+		if (filter.repository) {
+			const r = filter.repository.toLowerCase();
+			out = out.filter((x) => String(x.repo || '').toLowerCase().includes(r));
+		}
+		return out;
+	}
+
+	/**
+	 * Wait until at least `minCount` pull requests exist for a campaign, or the
+	 * timeout elapses. Remediation runs during the pentest, so PRs usually exist
+	 * as soon as the run completes; this poller covers the case where linkage
+	 * lags. It never loops forever — it stops at the timeout and reports it.
+	 */
+	async waitForPullRequests(
+		campaignId: string,
+		opts: {
+			minCount?: number;
+			pollMs?: number;
+			timeoutMs?: number;
+			sleep?: (ms: number) => Promise<void>;
+		} = {},
+	): Promise<{ pullRequests: PullRequest[]; timedOut: boolean }> {
+		const minCount = opts.minCount ?? 1;
+		const pollMs = opts.pollMs ?? 5000;
+		const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
+		const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+		const start = Date.now();
+		let prs: PullRequest[] = [];
+		while (Date.now() - start < timeoutMs) {
+			prs = await this.listPullRequests(campaignId);
+			if (prs.length >= minCount) return { pullRequests: prs, timedOut: false };
+			await sleep(pollMs);
+		}
+		prs = await this.listPullRequests(campaignId);
+		return { pullRequests: prs, timedOut: prs.length < minCount };
+	}
+
+	/**
+	 * Guard for remediation parameters. When remediation is enabled a credential
+	 * reference (opaque vault id) is required — this is validated before any
+	 * request so the run is never started half-configured. Throws DarkmoonError.
+	 */
+	static validateRemediation(params: {
+		remediate?: boolean;
+		credential_id?: string;
+	}): void {
+		if (params.remediate && !String(params.credential_id || '').trim()) {
+			throw new DarkmoonError(
+				'Remediation is enabled but no credential reference was provided. ' +
+					'Set the opaque Darkmoon credential reference (a vault id, not a token) ' +
+					'so the remediation agent can push a fix pull request.',
+			);
+		}
 	}
 }
