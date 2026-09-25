@@ -1,5 +1,7 @@
 # n8n-nodes-darkmoon
 
+> **📦 Marketplace status:** Published on [npm](https://www.npmjs.com/package/n8n-nodes-darkmoon) — installable as a community node today. n8n **verified-community-node** submission **pending review**.
+
 [![npm version](https://img.shields.io/npm/v/n8n-nodes-darkmoon?color=4f46e5&label=npm)](https://www.npmjs.com/package/n8n-nodes-darkmoon)
 [![n8n community node](https://img.shields.io/badge/n8n-community%20node-ff6d5a)](https://docs.n8n.io/integrations/community-nodes/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
