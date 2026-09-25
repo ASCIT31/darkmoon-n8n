@@ -1,5 +1,5 @@
 {
-	"node": "n8n-nodes-darkmoon.darkmoon",
+	"node": "n8n-nodes-darkmoon.darkmoonTrigger",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
 	"categories": ["Development", "Utility"],
@@ -11,7 +11,7 @@
 		],
 		"primaryDocumentation": [
 			{
-				"url": "https://github.com/ASCIT31/darkmoon-n8n"
+				"url": "https://github.com/ASCIT31/darkmoon-n8n#trigger"
 			}
 		]
 	}

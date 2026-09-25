@@ -3,10 +3,14 @@ name: Publish to npm (with provenance)
 # n8n verified community nodes must be published via GitHub Actions with an npm
 # provenance statement (required from 2026-05-01). Publishing from a local
 # machine is not accepted for verification.
+#
+# Triggers on a pushed `v*` tag (e.g. `v0.3.1`). Set the `NPM_TOKEN` repo secret
+# (a granular npm access token with publish rights).
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -24,16 +28,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      # --ignore-scripts avoids compiling native transitive deps (e.g.
-      # isolated-vm, pulled in by n8n-workflow) that we never use — lint,
-      # build, tests and publish need only the JS/type sources.
       - run: npm ci --ignore-scripts
 
       - run: npm run lint
-
       - run: npm run build
-
-      - run: npm run test:unit
+      - run: npm test
 
       - run: npm publish --provenance --access public
         env:

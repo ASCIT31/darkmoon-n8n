@@ -1,7 +1,7 @@
 {
 	"name": "n8n-nodes-darkmoon",
-	"version": "0.2.0",
-	"description": "n8n community node to trigger a Darkmoon AI pentest, retrieve its findings, and review the fix pull requests it prepares",
+	"version": "0.3.0",
+	"description": "n8n community node + trigger for Darkmoon: launch AI pentest campaigns, read findings, run retests, review remediation pull requests, and react to Darkmoon events. Built on the shared @darkmoon_ai/client.",
 	"keywords": [
 		"n8n-community-node-package",
 		"n8n",
@@ -10,35 +10,39 @@
 		"security",
 		"appsec",
 		"dast",
+		"soar",
 		"vulnerability"
 	],
 	"license": "MIT",
-	"homepage": "https://github.com/ASCIT31/n8n-nodes-darkmoon",
+	"homepage": "https://github.com/ASCIT31/darkmoon-n8n",
 	"author": {
-		"name": "ASC-IT / Darkmoon"
+		"name": "ASC-IT / Darkmoon",
+		"email": "contact@dark-moon.org",
+		"url": "https://dark-moon.org"
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/ASCIT31/n8n-nodes-darkmoon.git"
+		"url": "git+https://github.com/ASCIT31/darkmoon-n8n.git"
+	},
+	"bugs": {
+		"url": "https://github.com/ASCIT31/darkmoon-n8n/issues"
 	},
 	"engines": {
 		"node": ">=20.15"
 	},
 	"main": "index.js",
 	"scripts": {
-		"build": "npx rimraf dist && tsc && gulp build:icons",
+		"build": "npx rimraf dist && tsc && node scripts/bundle.mjs && gulp build:icons",
 		"dev": "tsc --watch",
 		"format": "prettier nodes credentials --write",
 		"lint": "eslint nodes credentials package.json",
 		"lintfix": "eslint nodes credentials package.json --fix",
 		"test": "npm run test:unit",
-		"test:unit": "node test/unit.mjs",
-		"test:e2e": "node test/e2e.mjs",
-		"test:e2e:local": "bash test/run_local_api.sh"
+		"test:unit": "node test/unit.mjs"
 	},
 	"files": [
 		"dist",
-		"examples"
+		"templates"
 	],
 	"n8n": {
 		"n8nNodesApiVersion": 1,
@@ -46,15 +50,18 @@
 			"dist/credentials/DarkmoonApi.credentials.js"
 		],
 		"nodes": [
-			"dist/nodes/Darkmoon/Darkmoon.node.js"
+			"dist/nodes/Darkmoon/Darkmoon.node.js",
+			"dist/nodes/DarkmoonTrigger/DarkmoonTrigger.node.js"
 		]
 	},
 	"peerDependencies": {
 		"n8n-workflow": "*"
 	},
 	"devDependencies": {
+		"@darkmoon_ai/client": "^0.2.0",
 		"@types/node": "^20.19.43",
 		"@typescript-eslint/parser": "^7.15.0",
+		"esbuild": "^0.24.0",
 		"eslint": "^8.57.0",
 		"eslint-plugin-n8n-nodes-base": "^1.16.3",
 		"gulp": "^5.0.0",

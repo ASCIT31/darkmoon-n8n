@@ -1,0 +1,64 @@
+{
+	"name": "Darkmoon → scheduled security-posture digest",
+	"meta": {
+		"templateCredsSetupCompleted": false,
+		"description": "Every morning, pull the Darkmoon severity time series and post a security-posture digest to Slack. Uses the Metric → Get Timeseries operation (server-side rollup); aggregate counts only, no evidence."
+	},
+	"nodes": [
+		{
+			"parameters": {
+				"rule": { "interval": [{ "triggerAtHour": 8 }] }
+			},
+			"id": "44440000-0000-4000-8000-000000000001",
+			"name": "Every morning at 08:00",
+			"type": "n8n-nodes-base.scheduleTrigger",
+			"typeVersion": 1.2,
+			"position": [-820, 300]
+		},
+		{
+			"parameters": {
+				"resource": "metric",
+				"operation": "getTimeseries",
+				"timeseriesOptions": { "metric": "severity", "group": "day" }
+			},
+			"id": "44440000-0000-4000-8000-000000000002",
+			"name": "Darkmoon: severity timeseries",
+			"type": "n8n-nodes-darkmoon.darkmoon",
+			"typeVersion": 1,
+			"position": [-600, 300],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } }
+		},
+		{
+			"parameters": {
+				"jsCode": "// Build a posture digest from the timeseries (latest point per severity series).\nconst series = $input.first().json.series || [];\nconst lines = series.map((s) => {\n  const pts = s.points || [];\n  const last = pts.length ? pts[pts.length - 1] : { value: 0 };\n  const prev = pts.length > 1 ? pts[pts.length - 2] : { value: last.value };\n  const delta = Number(last.value) - Number(prev.value);\n  const arrow = delta > 0 ? ':small_red_triangle: +' + delta : delta < 0 ? ':small_red_triangle_down: ' + delta : ':heavy_minus_sign: 0';\n  return '> ' + s.key + ': ' + last.value + '  (' + arrow + ')';\n});\nconst text = ':bar_chart: *Darkmoon security posture — daily digest*\\n' + (lines.join('\\n') || '> no data');\nreturn [{ json: { text } }];"
+			},
+			"id": "44440000-0000-4000-8000-000000000003",
+			"name": "Format digest",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [-380, 300]
+		},
+		{
+			"parameters": {
+				"select": "channel",
+				"channelId": { "__rl": true, "value": "#security", "mode": "name" },
+				"text": "={{ $json.text }}",
+				"otherOptions": {}
+			},
+			"id": "44440000-0000-4000-8000-000000000004",
+			"name": "Slack: post digest",
+			"type": "n8n-nodes-base.slack",
+			"typeVersion": 2.2,
+			"position": [-160, 300],
+			"credentials": { "slackApi": { "id": "", "name": "Slack account" } }
+		}
+	],
+	"connections": {
+		"Every morning at 08:00": { "main": [[{ "node": "Darkmoon: severity timeseries", "type": "main", "index": 0 }]] },
+		"Darkmoon: severity timeseries": { "main": [[{ "node": "Format digest", "type": "main", "index": 0 }]] },
+		"Format digest": { "main": [[{ "node": "Slack: post digest", "type": "main", "index": 0 }]] }
+	},
+	"settings": { "executionOrder": "v1" },
+	"pinData": {},
+	"tags": [{ "name": "security" }, { "name": "reporting" }, { "name": "digest" }]
+}

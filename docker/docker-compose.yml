@@ -1,0 +1,52 @@
+# Darkmoon n8n community node — real test lab.
+#
+#   docker compose -f docker/docker-compose.yml up -d --build
+#
+# Brings up:
+#   - mock-darkmoon : the Darkmoon Pro API stub (test/mock-darkmoon.mjs)
+#   - n8n           : a real n8nio/n8n with the community node installed
+#
+# The n8n credential should point Base URL at http://mock-darkmoon:8000 with any
+# API token. Import templates from /home/node/templates inside the container.
+services:
+  mock-darkmoon:
+    image: node:20-alpine
+    working_dir: /mock
+    volumes:
+      - ../test/mock-darkmoon.mjs:/mock/mock-darkmoon.mjs:ro
+    environment:
+      PORT: "8000"
+    command: ["node", "/mock/mock-darkmoon.mjs"]
+    ports:
+      - "8000:8000"
+
+  n8n:
+    # Plain n8n; the community node is loaded from the custom-extensions dir
+    # (the built dist/, bind-mounted). This is the local-dev loading path and
+    # needs no DB registration. To instead test the published tarball install,
+    # build n8n.Dockerfile (see its header) and set image: darkmoon-n8n:test.
+    image: n8nio/n8n:latest
+    depends_on:
+      - mock-darkmoon
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_SECURE_COOKIE: "false"
+      N8N_CUSTOM_EXTENSIONS: /home/node/.n8n/custom
+      N8N_COMMUNITY_PACKAGES_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_ONBOARDING_FLOW_DISABLED: "true"
+      N8N_RUNNERS_ENABLED: "true"
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: "all"
+      EXECUTIONS_DATA_SAVE_ON_ERROR: "all"
+      EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS: "true"
+      NODE_FUNCTION_ALLOW_BUILTIN: "*"
+      GENERIC_TIMEZONE: Europe/Paris
+      DARKMOON_BASE_URL: http://mock-darkmoon:8000
+    volumes:
+      - ../dist:/home/node/.n8n/custom:ro
+      - ../templates:/home/node/templates:ro
+    ports:
+      - "5678:5678"

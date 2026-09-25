@@ -1,0 +1,146 @@
+{
+	"name": "Darkmoon → DefectDojo (autonomous AI pentest import)",
+	"meta": {
+		"templateCredsSetupCompleted": false,
+		"description": "Launch a Darkmoon AI pentest, pull the findings through the Darkmoon node (redaction-safe, no evidence), map them to DefectDojo's Generic Findings Import v2, upload, and notify Slack. Secrets live in n8n credentials, never $env."
+	},
+	"nodes": [
+		{
+			"parameters": {},
+			"id": "11110000-0000-4000-8000-000000000001",
+			"name": "Run pentest",
+			"type": "n8n-nodes-base.manualTrigger",
+			"typeVersion": 1,
+			"position": [-1120, 300]
+		},
+		{
+			"parameters": {
+				"assignments": {
+					"assignments": [
+						{ "id": "a1", "name": "target", "value": "https://staging.example.com", "type": "string" },
+						{ "id": "a2", "name": "focus", "value": "web,api", "type": "string" },
+						{ "id": "a3", "name": "severity", "value": "medium", "type": "string" },
+						{ "id": "a4", "name": "defectdojoUrl", "value": "https://defectdojo.example.com", "type": "string" },
+						{ "id": "a5", "name": "engagementId", "value": "1", "type": "string" }
+					]
+				},
+				"options": {}
+			},
+			"id": "11110000-0000-4000-8000-000000000002",
+			"name": "Config",
+			"type": "n8n-nodes-base.set",
+			"typeVersion": 3.4,
+			"position": [-920, 300]
+		},
+		{
+			"parameters": {
+				"resource": "campaign",
+				"operation": "launch",
+				"target": "={{ $json.target }}",
+				"waitForCompletion": true,
+				"enableRemediation": false,
+				"options": {
+					"focus": "={{ $json.focus }}",
+					"severity": "={{ $json.severity }}",
+					"safeHarbor": "non-destructive",
+					"timeoutMinutes": 45
+				}
+			},
+			"id": "11110000-0000-4000-8000-000000000003",
+			"name": "Darkmoon: launch campaign",
+			"type": "n8n-nodes-darkmoon.darkmoon",
+			"typeVersion": 1,
+			"position": [-700, 300],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } }
+		},
+		{
+			"parameters": {
+				"resource": "finding",
+				"operation": "list",
+				"findingFilters": { "campaignId": "={{ $json.campaign_id }}" }
+			},
+			"id": "11110000-0000-4000-8000-000000000004",
+			"name": "Darkmoon: list findings",
+			"type": "n8n-nodes-darkmoon.darkmoon",
+			"typeVersion": 1,
+			"position": [-480, 300],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } }
+		},
+		{
+			"parameters": {
+				"jsCode": "// Map Darkmoon findings -> DefectDojo Generic Findings Import (v2).\n// The Darkmoon node already stripped evidence + secrets; we forward SAFE fields only.\nconst SEV = { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low', info: 'Info' };\nconst src = $input.first().json.findings || [];\nconst findings = src.map((f) => {\n  const out = {\n    title: f.title,\n    severity: SEV[String(f.severity || '').toLowerCase()] || 'Info',\n    description: f.title,\n    mitigation: f.remediation || '',\n    date: new Date().toISOString().slice(0, 10),\n    dynamic_finding: true,\n    static_finding: false,\n    unique_id_from_tool: f.id || (f.title + '|' + (f.endpoint || '')),\n    references: [f.mitreAttackId ? 'MITRE ATT&CK: ' + f.mitreAttackId : '', f.cve ? 'CVE: ' + f.cve : ''].filter(Boolean).join('\\n')\n  };\n  if (f.cvssScore != null) out.cvssv3_score = Number(f.cvssScore);\n  if (f.cvssVector) out.cvssv3 = f.cvssVector;\n  if (f.cve) out.vulnerability_ids = [{ vulnerability_id: f.cve }];\n  if (f.endpoint) out.file_path = f.endpoint;\n  if (f.discoveredByAgent) out.component_name = f.discoveredByAgent;\n  return out;\n});\nreturn [{ json: { findings } }];"
+			},
+			"id": "11110000-0000-4000-8000-000000000005",
+			"name": "Map → DefectDojo format",
+			"type": "n8n-nodes-base.code",
+			"typeVersion": 2,
+			"position": [-260, 300]
+		},
+		{
+			"parameters": {
+				"mode": "jsonToBinary",
+				"convertAllData": false,
+				"sourceKey": "findings",
+				"options": { "fileName": "darkmoon-findings.json", "mimeType": "application/json" }
+			},
+			"id": "11110000-0000-4000-8000-000000000006",
+			"name": "findings → file",
+			"type": "n8n-nodes-base.moveBinaryData",
+			"typeVersion": 1,
+			"position": [-40, 300]
+		},
+		{
+			"parameters": {
+				"method": "POST",
+				"url": "={{ $('Config').item.json.defectdojoUrl }}/api/v2/import-scan/",
+				"authentication": "genericCredentialType",
+				"genericAuthType": "httpHeaderAuth",
+				"contentType": "multipart-form-data",
+				"sendBody": true,
+				"bodyParameters": {
+					"parameters": [
+						{ "name": "scan_type", "value": "Generic Findings Import" },
+						{ "name": "engagement", "value": "={{ $('Config').item.json.engagementId }}" },
+						{ "name": "active", "value": "true" },
+						{ "name": "verified", "value": "false" },
+						{ "name": "close_old_findings", "value": "true" },
+						{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+					]
+				},
+				"options": {}
+			},
+			"id": "11110000-0000-4000-8000-000000000007",
+			"name": "DefectDojo: import scan",
+			"type": "n8n-nodes-base.httpRequest",
+			"typeVersion": 4.2,
+			"position": [180, 300],
+			"credentials": { "httpHeaderAuth": { "id": "", "name": "DefectDojo API token" } }
+		},
+		{
+			"parameters": {
+				"select": "channel",
+				"channelId": { "__rl": true, "value": "#security", "mode": "name" },
+				"text": "=:dart: Darkmoon pentest of {{ $('Config').item.json.target }} imported to DefectDojo — {{ $('Map → DefectDojo format').item.json.findings.length }} findings",
+				"otherOptions": {}
+			},
+			"id": "11110000-0000-4000-8000-000000000008",
+			"name": "Slack: notify",
+			"type": "n8n-nodes-base.slack",
+			"typeVersion": 2.2,
+			"position": [400, 300],
+			"credentials": { "slackApi": { "id": "", "name": "Slack account" } }
+		}
+	],
+	"connections": {
+		"Run pentest": { "main": [[{ "node": "Config", "type": "main", "index": 0 }]] },
+		"Config": { "main": [[{ "node": "Darkmoon: launch campaign", "type": "main", "index": 0 }]] },
+		"Darkmoon: launch campaign": { "main": [[{ "node": "Darkmoon: list findings", "type": "main", "index": 0 }]] },
+		"Darkmoon: list findings": { "main": [[{ "node": "Map → DefectDojo format", "type": "main", "index": 0 }]] },
+		"Map → DefectDojo format": { "main": [[{ "node": "findings → file", "type": "main", "index": 0 }]] },
+		"findings → file": { "main": [[{ "node": "DefectDojo: import scan", "type": "main", "index": 0 }]] },
+		"DefectDojo: import scan": { "main": [[{ "node": "Slack: notify", "type": "main", "index": 0 }]] }
+	},
+	"settings": { "executionOrder": "v1" },
+	"pinData": {},
+	"tags": [{ "name": "security" }, { "name": "DevSecOps" }, { "name": "pentest" }]
+}

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts avoids compiling native transitive deps (e.g. isolated-vm,
+      # pulled in by the n8n-workflow dev/peer dependency) that we never use — lint,
+      # build and tests need only the JS/type sources.
+      - run: npm ci --ignore-scripts
+
+      - name: Lint (eslint-plugin-n8n-nodes-base)
+        run: npm run lint
+
+      - name: Build (tsc + bundle + icons)
+        run: npm run build
+
+      - name: Unit tests (real bundled nodes vs mock API)
+        run: npm test
+
+      - name: Community-node scan (best effort)
+        continue-on-error: true
+        run: npx --yes @n8n/scan-community-package n8n-nodes-darkmoon || true

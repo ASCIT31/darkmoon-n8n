@@ -1,0 +1,105 @@
+{
+	"name": "Darkmoon → auto-retest on remediation PR merged → post verdict",
+	"meta": {
+		"templateCredsSetupCompleted": false,
+		"description": "When a Darkmoon remediation pull request is MERGED, automatically launch a retest of the base campaign, wait for the verdicts (fixed / still present / regressed / new), and post the result to Slack. The workflow never merges PRs itself."
+	},
+	"nodes": [
+		{
+			"parameters": {
+				"mode": "poll",
+				"events": ["pr.updated", "pr.opened"]
+			},
+			"id": "33330000-0000-4000-8000-000000000001",
+			"name": "Darkmoon Trigger: PR events",
+			"type": "n8n-nodes-darkmoon.darkmoonTrigger",
+			"typeVersion": 1,
+			"position": [-820, 300],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } },
+			"pollTimes": { "item": [{ "mode": "everyMinute" }] }
+		},
+		{
+			"parameters": {
+				"conditions": {
+					"options": { "caseSensitive": true, "typeValidation": "loose" },
+					"conditions": [
+						{
+							"id": "c1",
+							"leftValue": "={{ $json.data.state }}",
+							"rightValue": "merged",
+							"operator": { "type": "string", "operation": "equals" }
+						}
+					],
+					"combinator": "and"
+				},
+				"options": {}
+			},
+			"id": "33330000-0000-4000-8000-000000000002",
+			"name": "PR merged?",
+			"type": "n8n-nodes-base.if",
+			"typeVersion": 2,
+			"position": [-600, 300]
+		},
+		{
+			"parameters": {
+				"resource": "retest",
+				"operation": "launch",
+				"retestBy": "campaign",
+				"baseCampaignId": "={{ $json.data.campaign_id }}",
+				"retestOptions": { "safeHarbor": "non-destructive" }
+			},
+			"id": "33330000-0000-4000-8000-000000000003",
+			"name": "Darkmoon: launch retest",
+			"type": "n8n-nodes-darkmoon.darkmoon",
+			"typeVersion": 1,
+			"position": [-380, 220],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } }
+		},
+		{
+			"parameters": { "amount": 2, "unit": "minutes" },
+			"id": "33330000-0000-4000-8000-000000000004",
+			"name": "Wait for retest",
+			"type": "n8n-nodes-base.wait",
+			"typeVersion": 1.1,
+			"position": [-160, 220],
+			"webhookId": "darkmoon-retest-wait"
+		},
+		{
+			"parameters": {
+				"resource": "retest",
+				"operation": "get",
+				"retestId": "={{ $json.retestId }}"
+			},
+			"id": "33330000-0000-4000-8000-000000000005",
+			"name": "Darkmoon: get verdicts",
+			"type": "n8n-nodes-darkmoon.darkmoon",
+			"typeVersion": 1,
+			"position": [60, 220],
+			"credentials": { "darkmoonApi": { "id": "", "name": "Darkmoon account" } }
+		},
+		{
+			"parameters": {
+				"select": "channel",
+				"channelId": { "__rl": true, "value": "#security", "mode": "name" },
+				"text": "=:white_check_mark: Darkmoon retest {{ $json.retestId }} complete — fixed: {{ $json.verdictsSummary.fixed }}, still present: {{ $json.verdictsSummary.still_present }}, regressed: {{ $json.verdictsSummary.regressed }}, new: {{ $json.verdictsSummary.new }}",
+				"otherOptions": {}
+			},
+			"id": "33330000-0000-4000-8000-000000000006",
+			"name": "Slack: post verdict",
+			"type": "n8n-nodes-base.slack",
+			"typeVersion": 2.2,
+			"position": [280, 220],
+			"credentials": { "slackApi": { "id": "", "name": "Slack account" } }
+		}
+	],
+	"connections": {
+		"Darkmoon Trigger: PR events": { "main": [[{ "node": "PR merged?", "type": "main", "index": 0 }]] },
+		"PR merged?": { "main": [[{ "node": "Darkmoon: launch retest", "type": "main", "index": 0 }], []] },
+		"Darkmoon: launch retest": { "main": [[{ "node": "Wait for retest", "type": "main", "index": 0 }]] },
+		"Wait for retest": { "main": [[{ "node": "Darkmoon: get verdicts", "type": "main", "index": 0 }]] },
+		"Darkmoon: get verdicts": { "main": [[{ "node": "Slack: post verdict", "type": "main", "index": 0 }]] }
+	},
+	"settings": { "executionOrder": "v1" },
+	"pinData": {},
+	"tags": [{ "name": "security" }, { "name": "remediation" }, { "name": "retest" }]
+}

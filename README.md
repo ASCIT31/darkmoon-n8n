@@ -1,155 +1,167 @@
 # n8n-nodes-darkmoon
 
-An [n8n](https://n8n.io) community node for [Darkmoon](https://github.com/ASCIT31) — the local, privacy-first AI penetration-testing engine.
+[![npm version](https://img.shields.io/npm/v/n8n-nodes-darkmoon?color=4f46e5&label=npm)](https://www.npmjs.com/package/n8n-nodes-darkmoon)
+[![n8n community node](https://img.shields.io/badge/n8n-community%20node-ff6d5a)](https://docs.n8n.io/integrations/community-nodes/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-It lets an n8n workflow **trigger a Darkmoon pentest against a target you are authorised to assess, pull back the findings, and review the fix pull requests Darkmoon prepares** — so security testing and remediation review can be wired into CI/CD, ticketing, chat and reporting automations like any other step.
+An [n8n](https://n8n.io) **community node + trigger** for [Darkmoon](https://dark-moon.org),
+the autonomous AI pentest platform. Launch pentest campaigns, read findings, run
+retests, pull security-posture metrics, manage webhooks — and start workflows the
+moment Darkmoon confirms a finding, completes a campaign, or opens a fix pull request.
 
-> Darkmoon **runs and validates** security tests. It does not, and this node does not, guarantee that a system is secure. Findings can include false positives and must be reviewed by a qualified human. Only run assessments against systems you own or have explicit written authorisation to test. **This node never merges a pull request** — every fix is left for a person to review and merge.
+Use it as SOAR glue: **exploited finding → Slack/Jira/DefectDojo**, **remediation PR
+merged → auto-retest → post verdict**, **nightly scan → posture digest**.
 
-[Installation](#installation) · [Credentials](#credentials) · [Operations](#operations) · [Remediation](#remediation) · [How it works](#how-it-works) · [Example workflow](#example-workflow) · [Security notes](#security-notes) · [Limitations](#limitations) · [Development & tests](#development--tests) · [Submission plan](#submission-plan)
+## ⭐ Darkmoon ecosystem
+
+Darkmoon is open-source — **a star really helps us grow.** [![Star the Darkmoon core](https://img.shields.io/github/stars/ASCIT31/Dark-Moon?style=social&label=Star%20Darkmoon)](https://github.com/ASCIT31/Dark-Moon)
+
+🌐 **Website:** [dark-moon.org](https://dark-moon.org) · 📚 **Docs:** [docs.dark-moon.org](https://docs.dark-moon.org) · ⭐ **Star the core:** [github.com/ASCIT31/Dark-Moon](https://github.com/ASCIT31/Dark-Moon)
+
+**Install the integrations, right where you work:**
+
+| Platform | Get it |
+|---|---|
+| VS Code | [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=Darkmoon.darkmoon-vscode) |
+| JetBrains | [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/34497-darkmoon) |
+| GitHub Actions | [GitHub Marketplace](https://github.com/marketplace/actions/darkmoon-pentest) |
+| GitLab CI/CD | [CI/CD Catalog](https://gitlab.com/explore/catalog/Dark-Moon-X/darkmoon-scan) |
+| Jenkins | [Download the .hpi](https://github.com/ASCIT31/darkmoon-jenkins/releases) |
+| Client & CLI | [npm: @darkmoon_ai/client](https://www.npmjs.com/package/@darkmoon_ai/client) |
+
+## Screenshots
+
+Captured from a **real n8n** (`n8nio/n8n`) running this node in Docker against a
+synthetic **Demo Shop** campaign (zeroed secrets).
+
+| The node on a canvas | The operation picker |
+|---|---|
+| ![Darkmoon node on an n8n canvas](https://raw.githubusercontent.com/ASCIT31/darkmoon-n8n/main/docs/screenshots/01-canvas-workflow.png) | ![Darkmoon operation dropdown](https://raw.githubusercontent.com/ASCIT31/darkmoon-n8n/main/docs/screenshots/02-operation-dropdown.png) |
+
+| The trigger configuration | A template running |
+|---|---|
+| ![Darkmoon Trigger config](https://raw.githubusercontent.com/ASCIT31/darkmoon-n8n/main/docs/screenshots/03-trigger-config.png) | ![Template executed successfully](https://raw.githubusercontent.com/ASCIT31/darkmoon-n8n/main/docs/screenshots/04-template-running.png) |
 
 ## Installation
 
-Follow the [n8n community nodes installation guide](https://docs.n8n.io/integrations/community-nodes/installation/). In a self-hosted n8n:
-
-**Settings → Community Nodes → Install**, then enter `n8n-nodes-darkmoon`.
-
-## Credentials
-
-This node talks to the **Darkmoon Dashboard API** (the FastAPI service shipped with Darkmoon, typically on port `8000`). Darkmoon issues a short-lived JWT from `POST /api/v1/auth/login`, so the node logs in at run time using stored credentials.
-
-Create a **Darkmoon API** credential with:
-
-| Field      | Example                       | Notes                                   |
-| ---------- | ----------------------------- | --------------------------------------- |
-| Base URL   | `http://darkmoon.internal:8000` | Base URL of the Darkmoon Dashboard API |
-| Username   | `admin`                       | Dashboard user                          |
-| Password   | `••••••••`                    | Dashboard password                      |
-
-Use the credential's **Test** button to verify — it calls the real login endpoint.
-
-## Operations
-
-### Run Pentest
-Starts a pentest against **Target** (URL or host). With **Wait for Completion** on (default), the node polls the run to completion and returns the resolved campaign plus its findings and severity stats. With it off, it returns the `run_id` immediately for a later **Get Findings** call.
-
-Options: additional targets, out-of-scope, exclude, focus areas, minimum severity, safe-harbor reference, poll interval and timeout. See [Remediation](#remediation) for **Enable Remediation**.
-
-### Get Findings
-Returns the vulnerabilities for a **Campaign ID**, with aggregated stats (`by_severity`, `by_category`, `by_status`).
-
-### Get Report
-Returns the markdown report for a **Campaign ID**.
-
-### List Campaigns
-Lists past and running campaigns.
-
-### List Pull Requests
-Lists the fix pull requests Darkmoon prepared. Optionally restrict to one **Campaign ID** (the only filter the API applies server-side). Additional **Filters** (state, provider, repository) are applied **client-side** to the returned records. States are the real Darkmoon values: `proposed`, `draft`, `open`, `merged`, `closed`, `error`.
-
-### Get Pull Request
-Returns one pull-request record by **Pull Request ID** (diff summary, validation, linked findings).
-
-### Get Pull Requests by Finding
-Returns the pull requests that address a specific **Finding ID**.
-
-## Remediation
-
-Darkmoon can, after confirming an issue, generate a fix and open a **pull request** for a human to review. This is a Pro capability that runs **during** the pentest — it is not a separate API call. In the node it is turned on with **Enable Remediation** on the *Run Pentest* operation (default **off** — with it off, behaviour is unchanged and only findings are returned).
-
-When **Enable Remediation** is on, provide under *Remediation Settings*:
-
-| Setting | Maps to | Notes |
-| --- | --- | --- |
-| **Credential Reference** (required) | `credential_id` → `CREDENTIAL_REF` | **Opaque id** of an SCM credential stored in Darkmoon's vault. **Not a token.** |
-| Repository URL | `git_repo` → `REPO` | Repo where the fix PR is opened |
-| Allow Darkmoon to Create the Repository | `create_repo` → `CREATE_REPO` | |
-| Wait for Pull Requests | (client) | Poll after the run until a PR appears |
-| Pull Request Wait Timeout (Minutes) | (client) | Bounded wait; never loops forever |
-
-The pull requests appear on the *Run Pentest* output (`pull_requests`, `total_pull_requests`) and can also be read later with the pull-request operations above.
-
-**Pull requests are read-only through the API and this node**: PR records are created by Darkmoon's remediation agent during the run. There is no endpoint to open, update or merge a PR, and this node deliberately provides none. Merging is always a manual human step in your SCM.
-
-### Remediation lifecycle
+In n8n: **Settings → Community Nodes → Install**, then enter:
 
 ```
-confirmed finding → generate fix → validate in sandbox → retest → open pull request → human review → manual merge
+n8n-nodes-darkmoon
 ```
 
-Darkmoon only remediates issues it has confirmed and can reproduce; the fix is validated and the target retested before a PR is opened. The PR then waits for a person. Nothing in this pipeline merges automatically.
-
-## How it works
-
-The node maps to the Darkmoon Dashboard REST API (read from `Dark-Moon-Front-API`, branch `dev`):
-
-| Step                    | Endpoint                                            |
-| ----------------------- | --------------------------------------------------- |
-| Authenticate            | `POST /api/v1/auth/login`                            |
-| Start a run             | `POST /api/v1/run/campaign`                          |
-| Follow run state        | `GET /api/v1/run/logs/{run_id}` (JSONL, terminal event = done) |
-| Resolve the campaign    | `GET /api/v1/campaigns` (diff before/after the run)  |
-| Fetch findings          | `GET /api/v1/vulnerabilities?campaign_id=…`          |
-| Fetch report            | `GET /api/v1/campaigns/{id}/report`                  |
-| List pull requests      | `GET /api/v1/pull-requests?campaign_id=…`            |
-| One pull request        | `GET /api/v1/pull-requests/{pr_id}`                  |
-| Pull requests by finding| `GET /api/v1/pull-requests/finding/{vuln_id}`        |
-
-The trigger endpoint returns a `run_id`; the pentest agent creates the campaign itself. The node therefore correlates a run to its campaign by snapshotting the campaign set before the run and picking the one that appears afterwards. See [`docs/API.md`](docs/API.md) for the exact contract and a proposed first-class `run_id → campaign_id` link.
-
-## Example workflow
-
-Import [`examples/darkmoon-pentest-and-remediation-review.json`](examples/darkmoon-pentest-and-remediation-review.json) — **"Darkmoon Pentest and Remediation Review"**. It triggers a pentest on an authorised demo lab target, enables remediation with a credential reference, waits for completion, lists the reviewable pull requests (`proposed`/`draft`/`open`), and summarises everything into a message ready for a Slack / Microsoft Teams / Jira / Linear / GitHub / email node. It **merges nothing**. Replace the target, the Darkmoon credential, and the opaque credential reference before running.
-
-## Security notes
-
-- **No SCM tokens in workflow parameters.** Remediation takes an **opaque credential reference** (a Darkmoon vault id), never a raw token or key. The actual SCM secret stays in Darkmoon's encrypted vault; the Darkmoon dashboard password stays in the n8n credential store.
-- **No secrets in logs.** The node never logs requests or credentials, and its errors surface only the API's own `detail` message — the JWT, password and credential value are never included (covered by a dedicated test).
-- **No automatic merges.** The Darkmoon API exposes pull requests read-only; this node has no write/merge operation. Merging is always a manual human decision in your SCM.
-- **Authorised targets only.** Run assessments only against systems you own or are explicitly authorised to test.
-
-## Limitations
-
-- The node **does not merge, edit or close** pull requests — PR records are produced by Darkmoon's remediation process and are read-only here.
-- **Enable Remediation must be on at launch** — remediation runs during the pentest, so it cannot be started after the fact for a finished run.
-- Remediation typically **requires a valid SCM credential reference** and a repository, and only acts on **confirmed, reproducible** findings — so a run can complete with findings but no pull requests.
-- The API's only server-side PR filter is `campaign_id`; state / provider / repository filters in *List Pull Requests* are applied **client-side**.
-- Run→campaign correlation is best-effort (snapshot diff) until the API exposes a first-class `run_id → campaign_id` link (see [`docs/API.md`](docs/API.md)).
-
-## Development & tests
+Or self-host with npm:
 
 ```bash
-npm install
-npm run build         # tsc + copy icons into dist/
-npm run lint          # eslint-plugin-n8n-nodes-base (the verification ruleset)
-npm run test:unit     # mock-transport unit tests (no server needed)
-npm run test:e2e:local # real local API + stub engine, full happy path
+npm install n8n-nodes-darkmoon
 ```
 
-### Unit tests
+The package is **dependency-free at runtime** (the shared Darkmoon client is bundled
+at build time) and published with **npm provenance** from GitHub Actions.
 
-`test/unit.mjs` drives the compiled `DarkmoonClient` with a mock transport and covers remediation validation, HTTP error mapping (401/403/404/500), empty and malformed responses, bounded wait/poll timeouts, and that **no secret ever leaks into an error message**.
+**Compatibility:** n8n `>= 1.60`, Node `>= 20.15`. `n8nNodesApiVersion: 1`. Tested
+against n8n `2.40.x`.
 
-### End-to-end test
+## Credentials — `Darkmoon API`
 
-`test/run_local_api.sh` starts the **real** Darkmoon Dashboard API locally (no Docker required — it is a FastAPI-over-JSON service) against an isolated copy of its data store, with the `opencode` pentest engine replaced by `test/stub_opencode`. The stub drives the **real** dashboard write-path (`init_live_campaign` / `push_finding` / `finalize_campaign` / `pr_store.link_pr`), so the full trigger → wait → resolve-campaign → findings → report → **remediation → pull requests** flow is exercised against real API code:
+Create a **Darkmoon API** credential:
+
+| Field | Notes |
+|---|---|
+| **Base URL** | Your Darkmoon **Pro** REST API, e.g. `https://darkmoon.internal:8000` (with or without the `/api/v1` suffix). |
+| **Authentication** | `API Token (Bearer)` (recommended) or `Username and Password` (the node logs in and caches the short-lived JWT in memory). |
+| **API Token** / **Username / Password** | Stored with n8n's credential encryption. Secrets are never logged. |
+
+The **Test** button calls `GET /api/v1/system/info` to confirm the Base URL points at
+a real Darkmoon API and reports its edition + contract version.
+
+> **Networked deployments:** Darkmoon's write endpoints (`run/*`, `retest/*`,
+> `webhooks/*`) are destructive. Set `DARKMOON_REQUIRE_AUTH_WRITES=1` on the Pro API
+> and use a scoped token for any workflow that can launch campaigns or retests.
+
+## The `Darkmoon` node (actions)
+
+| Resource | Operation | What it does |
+|---|---|---|
+| **Campaign** | Launch | Start a pentest against an authorised target (optional wait-for-completion; optional remediation → fix PR). |
+| | Get | Get one campaign by ID. |
+| | List | List past & running campaigns (filter by target / status). |
+| | Get Severity Summary | Severity counts for a campaign. |
+| **Finding** | List | List findings (filter by campaign / severity / status / category). |
+| | Get | Get one finding by ID. |
+| | Get Evidence Metadata | Counts-only evidence metadata (never the evidence itself). |
+| **Retest** | Launch | Re-run a target or base campaign and compute per-finding verdicts. |
+| | Get Verdicts | Verdicts: `fixed` / `still_present` / `regressed` / `new`. |
+| **Metric** | Get Timeseries | Security-posture time series (severity / status / category / campaigns). |
+| **Webhook** | Register / List / Delete | Manage Darkmoon Pro webhooks (safe-field events, HMAC-signed). |
+
+### Remediation
+
+On **Campaign → Launch**, enable **Remediation** to let Darkmoon try to fix confirmed
+issues and open a **pull request for a human to review** (it never merges). It requires
+an **opaque credential reference** — a Darkmoon vault ID, **not** a token; no SCM secret
+ever travels through the workflow.
+
+## The `Darkmoon Trigger` node
+
+Starts a workflow on Darkmoon events, with an **event-type filter**
+(`campaign.*` / `finding.*` / `pr.*`). Two modes:
+
+- **Poll (recommended)** — a polling trigger that reproduces the event taxonomy with a
+  cloud-safe synthetic **poll-and-diff**. It reads campaigns / findings / pull-requests
+  each poll, diffs them against a durable cursor kept in the workflow static data
+  (exactly-once), and works behind NAT. First activation only primes the cursor (no
+  historical replay storm).
+- **Webhook** — registers a Darkmoon **Pro webhook** that POSTs signed events straight
+  to this node; the `X-Darkmoon-Signature` HMAC is verified before the workflow runs.
+
+## Templates
+
+Four importable workflows in [`templates/`](./templates) (**n8n → Import from File**):
+
+| # | Template | Flow |
+|---|---|---|
+| 1 | **Darkmoon → DefectDojo** | Launch campaign → list findings (redaction-safe) → map to DefectDojo Generic Findings Import v2 → upload → Slack notify. |
+| 2 | **Alert on `finding.exploited`** | Darkmoon Trigger (exploited) → format → Slack/Teams alert (safe fields only). |
+| 3 | **Auto-retest on PR merged** | Darkmoon Trigger (PR events) → *if merged* → launch retest → wait → post verdict to Slack. |
+| 4 | **Scheduled posture digest** | Schedule → Get Timeseries → format → Slack digest. |
+
+Each references a **Darkmoon API** credential and any third-party credentials (Slack,
+DefectDojo) — set them via n8n credentials, never `$env`.
+
+## Redaction & the OSS / Pro boundary (stated honestly)
+
+- **Evidence is never emitted.** Findings are returned with `evidence: null`; the
+  internal `raw` mirror is dropped and the output is scrubbed for secrets. To see that
+  evidence *exists*, use **Get Evidence Metadata** — counts only, never content.
+- **Secrets never travel or log.** SCM credentials are opaque vault references; tokens
+  live only in n8n's encrypted credential store.
+- **This node targets Darkmoon Pro** (the networked REST API). The **web dashboard, SSE
+  event stream, scheduler and remediation → PR are Pro-only** capabilities and are not
+  open source. The open-source Darkmoon core is the CLI + agents; a co-located OSS
+  install without the Pro API is not addressable by a networked automation host like n8n.
+- The node reuses the shared **`@darkmoon_ai/client`** contract (its normalizers,
+  redaction and verdict helpers) so its data model can never drift from the rest of the
+  Darkmoon ecosystem. Transport uses n8n's own HTTP helper, per community-node rules.
+
+## Testing it yourself (real Docker n8n)
 
 ```bash
-FRONT_API=/path/to/Dark-Moon-Front-API bash test/run_local_api.sh
+docker compose -f docker/docker-compose.yml up -d      # n8n + a mock Darkmoon API
+# open http://localhost:5678 , add a Darkmoon API credential
+#   Base URL: http://mock-darkmoon:8000 , any token
+# import a template from /home/node/templates , run it
 ```
 
-The engine's LLM-driven discovery (sealed container + license) is not part of this test; the finding and pull request it produces are labelled lab fixtures, not LLM results.
+Local checks:
 
-## Submission plan
-
-This package targets the n8n community-nodes registry (npm) and the **verified community nodes** programme. It already meets the structural rules: `n8n-nodes-` name, `n8n-community-node-package` keyword, `n8n` object with `n8nNodesApiVersion`, no runtime dependencies, MIT licence, English UI/docs, no filesystem/env access in node code, and it passes the linter. Publishing is wired to GitHub Actions with npm **provenance** (`.github/workflows/publish.yml`), as required for verification from 2026-05-01.
-
-Steps to publish:
-1. Push this package to `github.com/ASCIT31/n8n-nodes-darkmoon`.
-2. `npx @n8n/scan-community-package n8n-nodes-darkmoon` and fix anything it flags.
-3. Create a GitHub release → the workflow publishes to npm with provenance.
-4. Submit for verification via the n8n creator portal / [submit community nodes](https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/) process.
+```bash
+npm ci
+npm run lint          # eslint-plugin-n8n-nodes-base
+npm run build         # tsc + esbuild bundle + icons
+npm test              # drives the built nodes against the mock; asserts no secret leak
+```
 
 ## License
 
-[MIT](LICENSE)
+MIT © ASC-IT (SARL) — Darkmoon

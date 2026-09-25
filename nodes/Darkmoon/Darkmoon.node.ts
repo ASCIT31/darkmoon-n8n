@@ -1,27 +1,46 @@
 import type {
+	IDataObject,
 	IExecuteFunctions,
-	IHttpRequestMethods,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
+	JsonObject,
 	NodeConnectionType,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError } from 'n8n-workflow';
 
-import { DarkmoonClient, type HttpFn } from './DarkmoonClient';
+import {
+	authorize,
+	csv,
+	dm,
+	dmDelete,
+	launchAndCorrelate,
+	normalizeCampaignSafe,
+	sanitizeFinding,
+	severitySummaryOf,
+} from './GenericFunctions';
 
+/**
+ * Darkmoon action node.
+ *
+ * Every operation runs through the official shared client `@darkmoon_ai/client`
+ * (bundled at build time). There is no bespoke HTTP. Redaction is safe by
+ * default: findings never carry evidence, the full report needs a two-key opt-in,
+ * and remediation SCM secrets travel only as opaque vault references.
+ */
 export class Darkmoon implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Darkmoon',
 		name: 'darkmoon',
-		icon: 'file:darkmoon.svg',
+		icon: { light: 'file:darkmoon.svg', dark: 'file:darkmoon.svg' },
 		group: ['transform'],
 		version: 1,
-		subtitle: '={{$parameter["operation"]}}',
-		description: 'Trigger a Darkmoon AI pentest and retrieve its findings',
+		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
+		description: 'Launch AI pentest campaigns, read findings, run retests and manage Darkmoon webhooks',
 		defaults: {
 			name: 'Darkmoon',
 		},
+		usableAsTool: true,
 		inputs: ['main'] as NodeConnectionType[],
 		outputs: ['main'] as NodeConnectionType[],
 		credentials: [
@@ -32,59 +51,159 @@ export class Darkmoon implements INodeType {
 		],
 		properties: [
 			{
+				displayName: 'Resource',
+				name: 'resource',
+				type: 'options',
+				noDataExpression: true,
+				default: 'campaign',
+				options: [
+					{ name: 'Campaign', value: 'campaign' },
+					{ name: 'Finding', value: 'finding' },
+					{ name: 'Metric', value: 'metric' },
+					{ name: 'Retest', value: 'retest' },
+					{ name: 'Webhook', value: 'webhook' },
+				],
+			},
+
+			// ── Campaign operations ──────────────────────────────────────
+			{
 				displayName: 'Operation',
 				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
-				default: 'runPentest',
+				default: 'launch',
+				displayOptions: { show: { resource: ['campaign'] } },
 				options: [
 					{
-						name: 'Get Findings',
-						value: 'getFindings',
-						description: 'Fetch the vulnerabilities of a campaign',
-						action: 'Get findings for a campaign',
+						name: 'Get',
+						value: 'get',
+						description: 'Get one campaign by ID',
+						action: 'Get a campaign',
 					},
 					{
-						name: 'Get Pull Request',
-						value: 'getPullRequest',
-						description: 'Fetch one pull request record (diff summary, validation, linked findings)',
-						action: 'Get a pull request',
+						name: 'Get Severity Summary',
+						value: 'getSeveritySummary',
+						description: 'Get the severity counts for a campaign',
+						action: 'Get the severity summary of a campaign',
 					},
 					{
-						name: 'Get Pull Requests by Finding',
-						value: 'getPullRequestsByFinding',
-						description: 'Fetch the pull requests that address a specific finding',
-						action: 'Get pull requests for a finding',
+						name: 'Launch',
+						value: 'launch',
+						description: 'Launch a pentest campaign against an authorised target',
+						action: 'Launch a campaign',
 					},
 					{
-						name: 'Get Report',
-						value: 'getReport',
-						description: 'Fetch the markdown report of a campaign',
-						action: 'Get the report for a campaign',
-					},
-					{
-						name: 'List Campaigns',
-						value: 'listCampaigns',
+						name: 'List',
+						value: 'list',
 						description: 'List past and running campaigns',
 						action: 'List campaigns',
-					},
-					{
-						name: 'List Pull Requests',
-						value: 'listPullRequests',
-						description:
-							'List the fix pull requests Darkmoon prepared. Optionally narrow to one campaign, or to given states/provider/repository.',
-						action: 'List pull requests',
-					},
-					{
-						name: 'Run Pentest',
-						value: 'runPentest',
-						description: 'Start a pentest against a target and (optionally) wait for findings',
-						action: 'Run a pentest',
 					},
 				],
 			},
 
-			// ── Run Pentest ─────────────────────────────────────────────
+			// ── Finding operations ───────────────────────────────────────
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				default: 'list',
+				displayOptions: { show: { resource: ['finding'] } },
+				options: [
+					{
+						name: 'Get',
+						value: 'get',
+						description: 'Get one finding by ID (evidence excluded by default)',
+						action: 'Get a finding',
+					},
+					{
+						name: 'Get Evidence Metadata',
+						value: 'getEvidenceMeta',
+						description: 'Get counts-only evidence metadata for a finding (never the evidence itself)',
+						action: 'Get evidence metadata for a finding',
+					},
+					{
+						name: 'List',
+						value: 'list',
+						description: 'List findings, filtered by campaign, severity, status or category',
+						action: 'List findings',
+					},
+				],
+			},
+
+			// ── Retest operations ────────────────────────────────────────
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				default: 'launch',
+				displayOptions: { show: { resource: ['retest'] } },
+				options: [
+					{
+						name: 'Get Verdicts',
+						value: 'get',
+						description: 'Get a retest and its per-finding verdicts (fixed / still present / regressed / new)',
+						action: 'Get retest verdicts',
+					},
+					{
+						name: 'Launch',
+						value: 'launch',
+						description: 'Re-run a target or campaign and compute per-finding verdicts',
+						action: 'Launch a retest',
+					},
+				],
+			},
+
+			// ── Metric operations ────────────────────────────────────────
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				default: 'getTimeseries',
+				displayOptions: { show: { resource: ['metric'] } },
+				options: [
+					{
+						name: 'Get Timeseries',
+						value: 'getTimeseries',
+						description: 'Get a security-posture time series (severity, status, category or campaigns)',
+						action: 'Get a metrics time series',
+					},
+				],
+			},
+
+			// ── Webhook operations ───────────────────────────────────────
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				default: 'list',
+				displayOptions: { show: { resource: ['webhook'] } },
+				options: [
+					{
+						name: 'Delete',
+						value: 'delete',
+						description: 'Delete a registered Darkmoon webhook',
+						action: 'Delete a webhook',
+					},
+					{
+						name: 'List',
+						value: 'list',
+						description: 'List registered Darkmoon webhooks',
+						action: 'List webhooks',
+					},
+					{
+						name: 'Register',
+						value: 'register',
+						description: 'Register a webhook so Darkmoon posts signed events to a URL',
+						action: 'Register a webhook',
+					},
+				],
+			},
+
+			// ── Campaign: Launch ─────────────────────────────────────────
 			{
 				displayName: 'Target',
 				name: 'target',
@@ -92,27 +211,24 @@ export class Darkmoon implements INodeType {
 				default: '',
 				required: true,
 				placeholder: 'http://juice-shop.lab:3000 or 10.0.0.5',
-				description:
-					'Primary target URL or host. Only test systems you are explicitly authorised to assess.',
-				displayOptions: { show: { operation: ['runPentest'] } },
+				description: 'Primary target URL or host. Only test systems you are explicitly authorised to assess.',
+				displayOptions: { show: { resource: ['campaign'], operation: ['launch'] } },
 			},
 			{
 				displayName: 'Wait for Completion',
 				name: 'waitForCompletion',
 				type: 'boolean',
 				default: true,
-				description:
-					'Whether to poll until the run finishes and return the findings. If off, returns the run_id immediately.',
-				displayOptions: { show: { operation: ['runPentest'] } },
+				description: 'Whether to poll until the campaign finishes and return its final status. If off, returns immediately with the run reference.',
+				displayOptions: { show: { resource: ['campaign'], operation: ['launch'] } },
 			},
 			{
 				displayName: 'Enable Remediation',
 				name: 'enableRemediation',
 				type: 'boolean',
 				default: false,
-				description:
-					'Whether Darkmoon should also try to fix the issues it confirms and open a pull request with the fix for a human to review. It never merges anything. Leave off to only find issues. Requires a credential reference below.',
-				displayOptions: { show: { operation: ['runPentest'] } },
+				description: 'Whether Darkmoon should also try to fix confirmed issues and open a pull request for a human to review. It never merges anything. Requires an opaque credential reference below.',
+				displayOptions: { show: { resource: ['campaign'], operation: ['launch'] } },
 			},
 			{
 				displayName: 'Remediation Settings',
@@ -120,29 +236,23 @@ export class Darkmoon implements INodeType {
 				type: 'collection',
 				placeholder: 'Add Setting',
 				default: {},
-				displayOptions: { show: { operation: ['runPentest'], enableRemediation: [true] } },
+				displayOptions: {
+					show: { resource: ['campaign'], operation: ['launch'], enableRemediation: [true] },
+				},
 				options: [
 					{
 						displayName: 'Allow Darkmoon to Create the Repository',
 						name: 'createRepository',
 						type: 'boolean',
 						default: false,
-						description:
-							'Whether to authorise Darkmoon to create the repository if it does not exist yet',
+						description: 'Whether to authorise Darkmoon to create the repository if it does not exist yet',
 					},
 					{
 						displayName: 'Credential Reference',
 						name: 'credentialReference',
 						type: 'string',
 						default: '',
-						description: 'Opaque ID of a source-control credential already stored in Darkmoon\'s vault (create it in the Darkmoon dashboard, or via GET /api/v1/credentials). This is a reference, NOT a token — no secret is sent through the workflow.',
-					},
-					{
-						displayName: 'Pull Request Wait Timeout (Minutes)',
-						name: 'prTimeoutMinutes',
-						type: 'number',
-						default: 5,
-						description: 'Stop waiting for pull requests after this many minutes',
+						description: 'Opaque ID of a source-control credential already stored in Darkmoon\'s vault. This is a reference, NOT a token — no secret is sent through the workflow.',
 					},
 					{
 						displayName: 'Repository URL',
@@ -150,15 +260,7 @@ export class Darkmoon implements INodeType {
 						type: 'string',
 						default: '',
 						placeholder: 'https://github.com/acme/shop',
-						description: 'Source repository the target was built from, where the fix PR is opened',
-					},
-					{
-						displayName: 'Wait for Pull Requests',
-						name: 'waitForPullRequests',
-						type: 'boolean',
-						default: true,
-						description:
-							'Whether to keep checking after the pentest until at least one pull request appears, then return them. Remediation runs during the pentest, so PRs are usually ready immediately.',
+						description: 'Source repository the target was built from, where the fix pull request is opened',
 					},
 				],
 			},
@@ -168,7 +270,7 @@ export class Darkmoon implements INodeType {
 				type: 'collection',
 				placeholder: 'Add Option',
 				default: {},
-				displayOptions: { show: { operation: ['runPentest'] } },
+				displayOptions: { show: { resource: ['campaign'], operation: ['launch'] } },
 				options: [
 					{
 						displayName: 'Additional Targets',
@@ -206,7 +308,7 @@ export class Darkmoon implements INodeType {
 					},
 					{
 						displayName: 'Out of Scope',
-						name: 'out_of_scope',
+						name: 'outOfScope',
 						type: 'string',
 						default: '',
 						description: 'Comma-separated hosts/paths that must not be touched',
@@ -216,7 +318,7 @@ export class Darkmoon implements INodeType {
 						name: 'pollSeconds',
 						type: 'number',
 						default: 5,
-						description: 'How often to poll the run log while waiting',
+						description: 'How often to poll while waiting for completion',
 					},
 					{
 						displayName: 'Program / Scope Name',
@@ -227,7 +329,7 @@ export class Darkmoon implements INodeType {
 					},
 					{
 						displayName: 'Safe Harbor Reference',
-						name: 'safe_harbor',
+						name: 'safeHarbor',
 						type: 'string',
 						default: '',
 						description: 'Reference to the authorisation / safe-harbor policy for this engagement',
@@ -242,78 +344,104 @@ export class Darkmoon implements INodeType {
 				],
 			},
 
-			// ── Campaign id (getFindings / getReport) ───────────────────
+			// ── Campaign: Get / Get Severity Summary ─────────────────────
 			{
 				displayName: 'Campaign ID',
 				name: 'campaignId',
 				type: 'string',
 				default: '',
 				required: true,
-				description: 'The campaign to read (from Run Pentest output or List Campaigns)',
-				displayOptions: { show: { operation: ['getFindings', 'getReport'] } },
+				description: 'The campaign to read (from a Launch output or List)',
+				displayOptions: {
+					show: { resource: ['campaign'], operation: ['get', 'getSeveritySummary'] },
+				},
 			},
 
-			// ── Pull request parameters ─────────────────────────────────
-			{
-				displayName: 'Campaign ID',
-				name: 'prCampaignId',
-				type: 'string',
-				default: '',
-				description:
-					'Optional. Restrict to one campaign (the only filter the API applies server-side). Leave empty to list pull requests across all campaigns.',
-				displayOptions: { show: { operation: ['listPullRequests'] } },
-			},
+			// ── Campaign: List filters ───────────────────────────────────
 			{
 				displayName: 'Filters',
-				name: 'prFilters',
+				name: 'campaignFilters',
 				type: 'collection',
 				placeholder: 'Add Filter',
 				default: {},
-				description: 'Applied client-side to the returned records (the API does not filter by these)',
-				displayOptions: { show: { operation: ['listPullRequests'] } },
+				displayOptions: { show: { resource: ['campaign'], operation: ['list'] } },
 				options: [
 					{
-						displayName: 'Provider',
-						name: 'provider',
+						displayName: 'Status',
+						name: 'status',
 						type: 'string',
 						default: '',
-						placeholder: 'github',
-						description: 'Keep only pull requests from this SCM provider',
+						description: 'Filter by campaign status (running, completed, stopped, aborted)',
 					},
 					{
-						displayName: 'Repository',
-						name: 'repository',
+						displayName: 'Target ID',
+						name: 'targetId',
 						type: 'string',
 						default: '',
-						description: 'Keep only pull requests whose repository contains this text',
-					},
-					{
-						displayName: 'State',
-						name: 'state',
-						type: 'multiOptions',
-						default: [],
-						description: 'Keep only pull requests in these states',
-						options: [
-							{ name: 'Closed', value: 'closed' },
-							{ name: 'Draft', value: 'draft' },
-							{ name: 'Error', value: 'error' },
-							{ name: 'Merged', value: 'merged' },
-							{ name: 'Open', value: 'open' },
-							{ name: 'Proposed', value: 'proposed' },
-						],
+						description: 'Filter by target ID',
 					},
 				],
 			},
+
+			// ── Finding: List ────────────────────────────────────────────
 			{
-				displayName: 'Pull Request ID',
-				name: 'prId',
-				type: 'string',
-				default: '',
-				required: true,
-				placeholder: 'pr_1a2b3c4d5e6f',
-				description: 'The pull request to fetch',
-				displayOptions: { show: { operation: ['getPullRequest'] } },
+				displayName: 'Filters',
+				name: 'findingFilters',
+				type: 'collection',
+				placeholder: 'Add Filter',
+				default: {},
+				displayOptions: { show: { resource: ['finding'], operation: ['list'] } },
+				options: [
+					{
+						displayName: 'Campaign ID',
+						name: 'campaignId',
+						type: 'string',
+						default: '',
+						description: 'Restrict to one campaign',
+					},
+					{
+						displayName: 'Category',
+						name: 'category',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'Project ID',
+						name: 'projectId',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'Severity',
+						name: 'severity',
+						type: 'options',
+						default: '',
+						options: [
+							{ name: 'Any', value: '' },
+							{ name: 'Critical', value: 'critical' },
+							{ name: 'High', value: 'high' },
+							{ name: 'Info', value: 'info' },
+							{ name: 'Low', value: 'low' },
+							{ name: 'Medium', value: 'medium' },
+						],
+					},
+					{
+						displayName: 'Status',
+						name: 'status',
+						type: 'string',
+						default: '',
+						description: 'Filter by finding status (exploited, confirmed, unconfirmed, remediated)',
+					},
+					{
+						displayName: 'Target ID',
+						name: 'targetId',
+						type: 'string',
+						default: '',
+					},
+				],
 			},
+
+			// ── Finding: Get / Get Evidence Metadata ─────────────────────
 			{
 				displayName: 'Finding ID',
 				name: 'findingId',
@@ -321,8 +449,164 @@ export class Darkmoon implements INodeType {
 				default: '',
 				required: true,
 				placeholder: 'vuln_a03114',
-				description: 'The finding whose pull requests you want',
-				displayOptions: { show: { operation: ['getPullRequestsByFinding'] } },
+				description: 'The finding to read',
+				displayOptions: { show: { resource: ['finding'], operation: ['get', 'getEvidenceMeta'] } },
+			},
+
+			// ── Retest: Launch ───────────────────────────────────────────
+			{
+				displayName: 'Retest By',
+				name: 'retestBy',
+				type: 'options',
+				default: 'campaign',
+				description: 'Whether to retest the latest campaign on a target, or a specific base campaign',
+				displayOptions: { show: { resource: ['retest'], operation: ['launch'] } },
+				options: [
+					{ name: 'Base Campaign', value: 'campaign' },
+					{ name: 'Target', value: 'target' },
+				],
+			},
+			{
+				displayName: 'Base Campaign ID',
+				name: 'baseCampaignId',
+				type: 'string',
+				default: '',
+				required: true,
+				description: 'The base campaign whose findings the retest verifies',
+				displayOptions: { show: { resource: ['retest'], operation: ['launch'], retestBy: ['campaign'] } },
+			},
+			{
+				displayName: 'Target ID',
+				name: 'retestTargetId',
+				type: 'string',
+				default: '',
+				required: true,
+				description: 'The target to retest (uses its latest campaign as the baseline)',
+				displayOptions: { show: { resource: ['retest'], operation: ['launch'], retestBy: ['target'] } },
+			},
+			{
+				displayName: 'Retest Options',
+				name: 'retestOptions',
+				type: 'collection',
+				placeholder: 'Add Option',
+				default: {},
+				displayOptions: { show: { resource: ['retest'], operation: ['launch'] } },
+				options: [
+					{
+						displayName: 'Finding IDs',
+						name: 'findingIds',
+						type: 'string',
+						default: '',
+						description: 'Comma-separated base finding IDs to limit the verdict to',
+					},
+					{
+						displayName: 'Safe Harbor Reference',
+						name: 'safeHarbor',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+
+			// ── Retest: Get ──────────────────────────────────────────────
+			{
+				displayName: 'Retest ID',
+				name: 'retestId',
+				type: 'string',
+				default: '',
+				required: true,
+				description: 'The retest to read (from a Launch output)',
+				displayOptions: { show: { resource: ['retest'], operation: ['get'] } },
+			},
+
+			// ── Metric: Get Timeseries ───────────────────────────────────
+			{
+				displayName: 'Options',
+				name: 'timeseriesOptions',
+				type: 'collection',
+				placeholder: 'Add Option',
+				default: {},
+				displayOptions: { show: { resource: ['metric'], operation: ['getTimeseries'] } },
+				options: [
+					{
+						displayName: 'From (YYYY-MM-DD)',
+						name: 'from',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'Group',
+						name: 'group',
+						type: 'options',
+						default: 'day',
+						options: [
+							{ name: 'By Campaign', value: 'campaign' },
+							{ name: 'By Day', value: 'day' },
+						],
+					},
+					{
+						displayName: 'Metric',
+						name: 'metric',
+						type: 'options',
+						default: 'severity',
+						options: [
+							{ name: 'Campaigns', value: 'campaigns' },
+							{ name: 'Category', value: 'category' },
+							{ name: 'Severity', value: 'severity' },
+							{ name: 'Status', value: 'status' },
+						],
+					},
+					{
+						displayName: 'Project ID',
+						name: 'projectId',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'Target ID',
+						name: 'targetId',
+						type: 'string',
+						default: '',
+					},
+					{
+						displayName: 'To (YYYY-MM-DD)',
+						name: 'to',
+						type: 'string',
+						default: '',
+					},
+				],
+			},
+
+			// ── Webhook: Register ────────────────────────────────────────
+			{
+				displayName: 'Webhook URL',
+				name: 'webhookUrl',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'https://n8n.example.com/webhook/darkmoon',
+				description: 'HTTPS endpoint Darkmoon posts signed events to',
+				displayOptions: { show: { resource: ['webhook'], operation: ['register'] } },
+			},
+			{
+				displayName: 'Event Types',
+				name: 'webhookEvents',
+				type: 'string',
+				default: '',
+				placeholder: 'finding.exploited,campaign.completed',
+				description: 'Comma-separated event types to receive. Leave empty for all events.',
+				displayOptions: { show: { resource: ['webhook'], operation: ['register'] } },
+			},
+
+			// ── Webhook: Delete ──────────────────────────────────────────
+			{
+				displayName: 'Webhook ID',
+				name: 'webhookId',
+				type: 'string',
+				default: '',
+				required: true,
+				description: 'The webhook registration to delete',
+				displayOptions: { show: { resource: ['webhook'], operation: ['delete'] } },
 			},
 		],
 	};
@@ -332,206 +616,213 @@ export class Darkmoon implements INodeType {
 		const returnData: INodeExecutionData[] = [];
 
 		const creds = await this.getCredentials('darkmoonApi');
-		const baseUrl = String(creds.baseUrl || '').trim();
+		const node = this.getNode();
+		const session = await authorize(this, creds as never);
 
-		// Adapt n8n's httpRequest into the client's transport contract:
-		// never throw on HTTP status — return { statusCode, body } so the client
-		// surfaces the API's own error `detail`.
-		const http: HttpFn = async (opts) => {
-			const response = (await this.helpers.httpRequest({
-				method: opts.method as IHttpRequestMethods,
-				url: opts.url,
-				headers: opts.headers,
-				body: opts.body as object | undefined,
-				json: true,
-				returnFullResponse: true,
-				ignoreHttpStatusErrors: true,
-			})) as { statusCode: number; body: unknown };
-			return { statusCode: response.statusCode, body: response.body };
-		};
-
-		const client = new DarkmoonClient(baseUrl, http);
-		await client.login(String(creds.username), String(creds.password));
-
-		const csv = (v: unknown): string[] | undefined => {
-			const s = String(v ?? '').trim();
-			if (!s) return undefined;
-			return s.split(',').map((x) => x.trim()).filter(Boolean);
+		const clean = (obj: IDataObject): IDataObject => {
+			const out: IDataObject = {};
+			for (const [k, v] of Object.entries(obj)) if (v !== undefined) out[k] = v;
+			return out;
 		};
 
 		for (let i = 0; i < items.length; i++) {
+			const resource = this.getNodeParameter('resource', i) as string;
 			const operation = this.getNodeParameter('operation', i) as string;
 			try {
-				if (operation === 'runPentest') {
+				let json: Record<string, unknown> = {};
+
+				if (resource === 'campaign' && operation === 'launch') {
 					const target = this.getNodeParameter('target', i) as string;
 					const wait = this.getNodeParameter('waitForCompletion', i) as boolean;
-					const opt = this.getNodeParameter('options', i, {}) as Record<string, any>;
+					const opt = this.getNodeParameter('options', i, {}) as Record<string, unknown>;
 					const enableRemediation = this.getNodeParameter('enableRemediation', i, false) as boolean;
 					const rem = enableRemediation
-						? (this.getNodeParameter('remediation', i, {}) as Record<string, any>)
+						? (this.getNodeParameter('remediation', i, {}) as Record<string, unknown>)
 						: {};
 
 					const credentialReference = String(rem.credentialReference || '').trim();
-					// Fail fast if remediation is on but no credential reference is set.
-					try {
-						DarkmoonClient.validateRemediation({
-							remediate: enableRemediation,
-							credential_id: credentialReference,
-						});
-					} catch (e) {
-						throw new NodeOperationError(this.getNode(), (e as Error).message, { itemIndex: i });
+					if (enableRemediation && !credentialReference) {
+						throw new NodeOperationError(
+							node,
+							'Remediation is enabled but no credential reference was provided. Set the opaque Darkmoon vault reference (not a token) so the remediation agent can push a fix pull request.',
+							{ itemIndex: i },
+						);
 					}
 
-					const beforeIds = new Set((await client.listCampaigns()).map((c) => c.id));
-
-					const handle = await client.runCampaign({
+					const body = clean({
 						target,
-						program: opt.program || undefined,
+						program: (opt.program as string) || undefined,
 						targets: csv(opt.targets),
-						out_of_scope: csv(opt.out_of_scope),
+						out_of_scope: csv(opt.outOfScope),
 						exclude: csv(opt.exclude),
 						focus: csv(opt.focus),
-						severity: opt.severity || undefined,
-						safe_harbor: opt.safe_harbor || undefined,
-						// Remediation — opaque credential reference only, never a token.
+						severity: (opt.severity as string) || undefined,
+						safe_harbor: (opt.safeHarbor as string) || undefined,
 						remediate: enableRemediation || undefined,
 						credential_id: enableRemediation ? credentialReference : undefined,
 						git_repo: enableRemediation ? String(rem.repositoryUrl || '').trim() || undefined : undefined,
 						create_repo: enableRemediation ? Boolean(rem.createRepository) || undefined : undefined,
 					});
 
-					if (!wait) {
-						returnData.push({
-							json: {
-								operation,
-								...handle,
-								status: 'started',
-								waited: false,
-								remediation_enabled: enableRemediation,
-							},
-							pairedItem: { item: i },
-						});
-						continue;
-					}
-
-					const { terminal, timedOut } = await client.waitForRun(handle.run_id, {
+					const result = await launchAndCorrelate(this, node, session, body, {
+						wait,
 						pollMs: Math.max(1, Number(opt.pollSeconds ?? 5)) * 1000,
 						timeoutMs: Math.max(1, Number(opt.timeoutMinutes ?? 30)) * 60 * 1000,
 					});
-
-					const campaign = await client.resolveRunCampaign(beforeIds, target);
-					let findings: any = { data: [], total: 0, stats: {} };
-					if (campaign) findings = await client.getFindings(campaign.id);
-
-					// Pull requests: remediation runs during the pentest, so PRs are
-					// usually present as soon as the run completes. We fetch them (and
-					// optionally poll briefly) but NEVER merge or modify them.
-					let pullRequests: any[] = [];
-					let prTimedOut = false;
-					if (enableRemediation && campaign) {
-						const waitPr = rem.waitForPullRequests !== false;
-						if (waitPr) {
-							const res = await client.waitForPullRequests(campaign.id, {
-								minCount: 1,
-								pollMs: 5000,
-								timeoutMs: Math.max(1, Number(rem.prTimeoutMinutes ?? 5)) * 60 * 1000,
-							});
-							pullRequests = res.pullRequests;
-							prTimedOut = res.timedOut;
-						} else {
-							pullRequests = await client.listPullRequests(campaign.id);
-						}
-					}
-
-					returnData.push({
-						json: {
-							operation,
-							run_id: handle.run_id,
-							command: handle.command,
-							status: timedOut ? 'timeout' : terminal?.type || 'unknown',
-							exit_code: terminal?.exit_code,
-							campaign_id: campaign?.id ?? null,
-							overall_risk: campaign?.overall_risk ?? null,
-							total_findings: findings.total,
-							stats: findings.stats,
-							findings: findings.data,
-							remediation_enabled: enableRemediation,
-							pull_requests_timed_out: enableRemediation ? prTimedOut : undefined,
-							total_pull_requests: enableRemediation ? pullRequests.length : undefined,
-							pull_requests: enableRemediation ? pullRequests : undefined,
-							waited: true,
-						},
-						pairedItem: { item: i },
+					const c = result.campaign as unknown as Record<string, unknown> | null;
+					json = {
+						status: result.status,
+						waited: wait,
+						run_id: result.runId,
+						campaign_id: c ? c.id : null,
+						overall_risk: c ? c.overallRisk ?? null : null,
+						stats: c ? c.stats ?? {} : {},
+						remediation_enabled: enableRemediation,
+					};
+				} else if (resource === 'campaign' && operation === 'get') {
+					const campaignId = this.getNodeParameter('campaignId', i) as string;
+					const body = await dm(this, node, session, 'GET', `/campaigns/${encodeURIComponent(campaignId)}`);
+					json = normalizeCampaignSafe(body.data ?? body);
+				} else if (resource === 'campaign' && operation === 'list') {
+					const f = this.getNodeParameter('campaignFilters', i, {}) as Record<string, unknown>;
+					const body = await dm(this, node, session, 'GET', '/campaigns', {
+						qs: clean({ target_id: (f.targetId as string) || undefined, status: (f.status as string) || undefined }),
 					});
-				} else if (operation === 'listPullRequests') {
-					const prCampaignId = String(this.getNodeParameter('prCampaignId', i, '') as string).trim();
-					const prFilters = this.getNodeParameter('prFilters', i, {}) as Record<string, any>;
-					const all = await client.listPullRequests(prCampaignId || undefined);
-					const filtered = DarkmoonClient.filterPullRequests(all, {
-						state: Array.isArray(prFilters.state) ? prFilters.state : undefined,
-						provider: prFilters.provider || undefined,
-						repository: prFilters.repository || undefined,
+					const rows = Array.isArray(body.data) ? (body.data as unknown[]) : [];
+					json = { total: rows.length, campaigns: rows.map(normalizeCampaignSafe) };
+				} else if (resource === 'campaign' && operation === 'getSeveritySummary') {
+					const campaignId = this.getNodeParameter('campaignId', i) as string;
+					const body = await dm(this, node, session, 'GET', `/campaigns/${encodeURIComponent(campaignId)}`);
+					const camp = (body.data ?? body) as { stats?: unknown };
+					json = { campaign_id: campaignId, ...severitySummaryOf(camp.stats) };
+				} else if (resource === 'finding' && operation === 'list') {
+					const f = this.getNodeParameter('findingFilters', i, {}) as Record<string, unknown>;
+					const body = await dm(this, node, session, 'GET', '/vulnerabilities', {
+						qs: clean({
+							campaign_id: (f.campaignId as string) || undefined,
+							project_id: (f.projectId as string) || undefined,
+							target_id: (f.targetId as string) || undefined,
+							severity: (f.severity as string) || undefined,
+							category: (f.category as string) || undefined,
+							status: (f.status as string) || undefined,
+						}),
 					});
-					returnData.push({
-						json: {
-							operation,
-							campaign_id: prCampaignId || null,
-							total: filtered.length,
-							pull_requests: filtered,
-						},
-						pairedItem: { item: i },
-					});
-				} else if (operation === 'getPullRequest') {
-					const prId = this.getNodeParameter('prId', i) as string;
-					const pr = await client.getPullRequest(prId);
-					returnData.push({
-						json: { operation, ...pr },
-						pairedItem: { item: i },
-					});
-				} else if (operation === 'getPullRequestsByFinding') {
+					const rows = Array.isArray(body.data) ? (body.data as unknown[]) : [];
+					json = { total: rows.length, findings: rows.map(sanitizeFinding) };
+				} else if (resource === 'finding' && operation === 'get') {
 					const findingId = this.getNodeParameter('findingId', i) as string;
-					const prs = await client.getPullRequestsForFinding(findingId);
-					returnData.push({
-						json: {
-							operation,
-							finding_id: findingId,
-							total: prs.length,
-							pull_requests: prs,
+					const body = await dm(this, node, session, 'GET', `/vulnerabilities/${encodeURIComponent(findingId)}`);
+					json = sanitizeFinding(body.data ?? body);
+				} else if (resource === 'finding' && operation === 'getEvidenceMeta') {
+					const findingId = this.getNodeParameter('findingId', i) as string;
+					const d = await dm(this, node, session, 'GET', `/vulnerabilities/${encodeURIComponent(findingId)}/evidence-meta`);
+					const counts = (d.counts as IDataObject) || {};
+					json = {
+						vulnId: (d.vuln_id as string) ?? findingId,
+						hasEvidence: Boolean(d.has_evidence),
+						counts: {
+							commands: Number(counts.commands ?? 0),
+							payloads: Number(counts.payloads ?? 0),
+							screenshots: Number(counts.screenshots ?? 0),
+							logs: Number(counts.logs ?? 0),
+							requests: Number(counts.requests ?? 0),
 						},
-						pairedItem: { item: i },
+						commandNames: Array.isArray(d.command_names) ? (d.command_names as string[]).map(String) : [],
+						hasScreenshot: Boolean(d.has_screenshot),
+						hasExtractedData: Boolean(d.has_extracted_data),
+						redacted: d.redacted !== false,
+					};
+				} else if (resource === 'retest' && operation === 'launch') {
+					const retestBy = this.getNodeParameter('retestBy', i) as string;
+					const ro = this.getNodeParameter('retestOptions', i, {}) as Record<string, unknown>;
+					const body = clean({
+						finding_ids: csv(ro.findingIds),
+						safe_harbor: (ro.safeHarbor as string) || undefined,
+						campaign_id: retestBy === 'campaign' ? (this.getNodeParameter('baseCampaignId', i) as string) : undefined,
+						target_id: retestBy === 'target' ? (this.getNodeParameter('retestTargetId', i) as string) : undefined,
 					});
-				} else if (operation === 'getFindings') {
-					const campaignId = this.getNodeParameter('campaignId', i) as string;
-					const findings = await client.getFindings(campaignId);
-					returnData.push({
-						json: { operation, campaign_id: campaignId, ...findings },
-						pairedItem: { item: i },
+					const d = await dm(this, node, session, 'POST', '/retest', { body, okStatuses: [200, 201] });
+					json = {
+						retestId: d.retest_id,
+						runId: d.run_id ?? null,
+						baseCampaignId: d.base_campaign_id ?? null,
+						targetId: d.target_id ?? null,
+					};
+				} else if (resource === 'retest' && operation === 'get') {
+					const retestId = this.getNodeParameter('retestId', i) as string;
+					const d = await dm(this, node, session, 'GET', `/retest/${encodeURIComponent(retestId)}`);
+					const vs = (d.verdicts_summary as IDataObject) || {};
+					json = {
+						retestId: d.retest_id,
+						baseCampaignId: d.base_campaign_id ?? null,
+						newCampaignId: d.new_campaign_id ?? null,
+						targetId: d.target_id ?? null,
+						status: d.status === 'completed' ? 'completed' : 'running',
+						verdictsSummary: {
+							fixed: Number(vs.fixed ?? 0),
+							still_present: Number(vs.still_present ?? 0),
+							regressed: Number(vs.regressed ?? 0),
+							new: Number(vs.new ?? 0),
+						},
+						findings: Array.isArray(d.findings)
+							? (d.findings as IDataObject[]).map((v) => ({
+									findingId: v.finding_id ?? null,
+									newFindingId: v.new_finding_id ?? null,
+									baseStatus: v.base_status ?? null,
+									newStatus: v.new_status ?? null,
+									severity: v.severity ?? null,
+									verdict: v.verdict,
+								}))
+							: [],
+					};
+				} else if (resource === 'metric' && operation === 'getTimeseries') {
+					const o = this.getNodeParameter('timeseriesOptions', i, {}) as Record<string, unknown>;
+					const d = await dm(this, node, session, 'GET', '/metrics/timeseries', {
+						qs: clean({
+							metric: (o.metric as string) || 'severity',
+							group: (o.group as string) || 'day',
+							project_id: (o.projectId as string) || undefined,
+							target_id: (o.targetId as string) || undefined,
+							from: (o.from as string) || undefined,
+							to: (o.to as string) || undefined,
+						}),
+						okStatuses: [200],
 					});
-				} else if (operation === 'getReport') {
-					const campaignId = this.getNodeParameter('campaignId', i) as string;
-					const report = await client.getReport(campaignId);
-					returnData.push({
-						json: { operation, campaign_id: campaignId, ...report },
-						pairedItem: { item: i },
+					json = {
+						metric: d.metric ?? 'severity',
+						group: d.group ?? 'day',
+						series: Array.isArray(d.series) ? d.series : [],
+					};
+				} else if (resource === 'webhook' && operation === 'register') {
+					const url = this.getNodeParameter('webhookUrl', i) as string;
+					const body = await dm(this, node, session, 'POST', '/webhooks', {
+						body: { url, events: csv(this.getNodeParameter('webhookEvents', i, '')) || [], format: 'darkmoon' },
+						okStatuses: [200, 201],
 					});
-				} else if (operation === 'listCampaigns') {
-					const campaigns = await client.listCampaigns();
-					returnData.push({
-						json: { operation, total: campaigns.length, campaigns },
-						pairedItem: { item: i },
-					});
+					json = (body.data ?? body) as IDataObject;
+				} else if (resource === 'webhook' && operation === 'list') {
+					const body = await dm(this, node, session, 'GET', '/webhooks');
+					const rows = Array.isArray(body.data) ? (body.data as IDataObject[]) : [];
+					json = { total: rows.length, webhooks: rows };
+				} else if (resource === 'webhook' && operation === 'delete') {
+					const webhookId = this.getNodeParameter('webhookId', i) as string;
+					json = { id: webhookId, deleted: await dmDelete(this, node, session, `/webhooks/${encodeURIComponent(webhookId)}`) };
 				} else {
-					throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
+					throw new NodeOperationError(node, `Unsupported ${resource}: ${operation}`, {
+						itemIndex: i,
+					});
 				}
+
+				returnData.push({ json: { resource, operation, ...json }, pairedItem: { item: i } });
 			} catch (error) {
 				if (this.continueOnFail()) {
 					returnData.push({
-						json: { error: (error as Error).message },
+						json: { resource, operation, error: (error as Error).message },
 						pairedItem: { item: i },
 					});
 					continue;
 				}
-				throw error;
+				throw new NodeApiError(node, error as JsonObject, { itemIndex: i });
 			}
 		}
 
