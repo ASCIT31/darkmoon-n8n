@@ -3,6 +3,22 @@
 All notable changes to `n8n-nodes-darkmoon` are documented here. This project
 follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-09-30
+
+Verification-readiness release. No functional or API changes from `0.3.0`; this
+version exists solely to publish the package **with npm provenance** so it passes
+`@n8n/scan-community-package` and qualifies for the n8n Verified Community Nodes
+program.
+
+### Fixed
+- **npm provenance.** `0.3.0` was published to the registry manually before the
+  `Publish to npm (with provenance)` workflow ran, so the CI job's idempotency
+  guard skipped the publish and the live tarball carried no provenance statement
+  (`@n8n/scan-community-package` reported *"Package was not published with npm
+  provenance"*). `0.3.1` is published exclusively through GitHub Actions with
+  `id-token: write` and `npm publish --provenance`, producing an SLSA provenance
+  attestation as required for verification (mandatory from 2026-05-01).
+
 ## [0.3.0] - 2026-09-25
 
 Upgraded to the official n8n **community-node standard** (repo moved to
