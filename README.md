@@ -167,3 +167,18 @@ npm test              # drives the built nodes against the mock; asserts no secr
 ## License
 
 MIT © ASC-IT (SARL) — Darkmoon
+
+## 🎥 Video tutorial
+
+[![Watch the Darkmoon + n8n tutorial on YouTube](https://img.youtube.com/vi/3htg8kh7Dr8/maxresdefault.jpg)](https://youtu.be/3htg8kh7Dr8)
+
+▶ **[Watch the full Darkmoon + n8n tutorial on YouTube](https://youtu.be/3htg8kh7Dr8)** — real setup, end to end.
+
+## Darkmoon ecosystem
+
+Darkmoon is an open-source, AI-powered penetration testing platform. It runs a full autonomous assessment and this integration brings the results into your n8n workflow.
+
+- ⭐ **Flagship (star it):** https://github.com/ASCIT31/Dark-Moon
+- 📚 **Docs:** https://docs.dark-moon.org
+- 🌐 **Website:** https://dark-moon.org
+- 🔗 **Related integrations:** [darkmoon-client](https://github.com/ASCIT31/darkmoon-client) · [darkmoon-action](https://github.com/ASCIT31/darkmoon-action) 
